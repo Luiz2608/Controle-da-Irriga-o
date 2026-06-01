@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Controle da Irrigação</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <link rel="stylesheet" href="style.css">
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+</head>
+
+<body data-theme="light">
+  <aside class="sidebar">
+    <div class="logo-box">
+      <div class="logo">🌱</div>
+      <div>
+        <h2>Irrigação</h2>
+        <p>Controle automotivo</p>
+      </div>
+    </div>
+
+    <button onclick="mostrarTela('dashboard')">📊 Dashboard</button>
+    <button onclick="mostrarTela('cadastro')">➕ Cadastro</button>
+    <button onclick="mostrarTela('equipamentos')">📋 Equipamentos</button>
+    <button onclick="mostrarTela('relatorio')">📲 Relatório</button>
+    <button onclick="mostrarTela('historico')">🕒 Histórico</button>
+
+    <div class="tema-box">
+      <button onclick="alternarTema()" id="btnTema">🌙 Tema escuro</button>
+    </div>
+  </aside>
+
+  <main class="conteudo">
+    <section id="dashboard" class="tela ativa">
+      <div class="hero">
+        <div>
+          <h1>Controle de Disponibilidade da Irrigação</h1>
+          <p>Dashboard operacional dos caminhões, tratores, tanques e equipamentos de apoio.</p>
+          <span id="ultimaAtualizacaoHero">Última atualização: --</span>
+        </div>
+
+        <div class="hero-card">
+          <span>Disponibilidade da Irrigação hoje</span>
+          <strong id="heroDisponibilidade">0%</strong>
+        </div>
+      </div>
+
+      <div class="acoes-topo">
+        <button class="btn-principal" onclick="carregarEquipamentos()">🔄 Atualizar dados</button>
+        <button class="btn-secundario" onclick="exportarExcel()">📗 Exportar Excel</button>
+        <button class="btn-secundario" onclick="exportarPDF()">📄 Exportar PDF</button>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <span>Total Geral</span>
+          <strong id="cardTotal">0</strong>
+        </div>
+
+        <div class="card verde">
+          <span>Disponíveis</span>
+          <strong id="cardDisponiveis">0</strong>
+        </div>
+
+        <div class="card vermelho">
+          <span>Indisponíveis</span>
+          <strong id="cardIndisponiveis">0</strong>
+        </div>
+
+        <div class="card escuro">
+          <span>Tombados (Acidente)</span>
+          <strong id="cardTombados">0</strong>
+        </div>
+
+        <div class="card verde">
+          <span>Disponibilidade</span>
+          <strong id="cardPercentual">0%</strong>
+        </div>
+      </div>
+
+      <div class="cards categorias-cards">
+        <div class="card pequeno">
+          <span>Caminhões</span>
+          <strong id="totalCaminhoes">0</strong>
+        </div>
+
+        <div class="card pequeno">
+          <span>Tratores</span>
+          <strong id="totalTratores">0</strong>
+        </div>
+
+        <div class="card pequeno">
+          <span>Tanques</span>
+          <strong id="totalTanques">0</strong>
+        </div>
+
+        <div class="card pequeno">
+          <span>Apoio</span>
+          <strong id="totalApoio">0</strong>
+        </div>
+      </div>
+
+      <h2>📈 Visão Geral</h2>
+
+      <div class="graficos-principais">
+        <div class="grafico-box grafico-barra">
+          <h3>Quantidade por status</h3>
+          <div class="chart-area chart-barra">
+            <canvas id="graficoBarraStatus"></canvas>
+          </div>
+        </div>
+
+        <div class="grafico-box">
+          <h3>Distribuição geral por status</h3>
+          <div class="chart-area">
+            <canvas id="graficoPizzaGeral"></canvas>
+          </div>
+          <p id="infoPizzaGeral" class="info-grafico"></p>
+        </div>
+      </div>
+
+      <h2>🥧 Disponibilidade por Categoria</h2>
+
+      <div class="graficos-categorias">
+        <div class="grafico-box">
+          <h3>🚛 Caminhões</h3>
+          <div class="chart-area">
+            <canvas id="pizzaCaminhao"></canvas>
+          </div>
+          <p id="infoPizzaCaminhao" class="info-grafico"></p>
+        </div>
+
+        <div class="grafico-box">
+          <h3>🚜 Tratores</h3>
+          <div class="chart-area">
+            <canvas id="pizzaTrator"></canvas>
+          </div>
+          <p id="infoPizzaTrator" class="info-grafico"></p>
+        </div>
+
+        <div class="grafico-box">
+          <h3>🛢️ Tanques</h3>
+          <div class="chart-area">
+            <canvas id="pizzaTanque"></canvas>
+          </div>
+          <p id="infoPizzaTanque" class="info-grafico"></p>
+        </div>
+
+        <div class="grafico-box">
+          <h3>🛠️ Apoio</h3>
+          <div class="chart-area">
+            <canvas id="pizzaApoio"></canvas>
+          </div>
+          <p id="infoPizzaApoio" class="info-grafico"></p>
+        </div>
+      </div>
+
+      <h2>⚠️ Equipamentos Indisponíveis / Tombados</h2>
+
+      <div class="tabela-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Frota</th>
+              <th>Categoria</th>
+              <th>Status</th>
+              <th>Problema</th>
+              <th>OS</th>
+              <th>Previsão</th>
+              <th>Responsável</th>
+            </tr>
+          </thead>
+          <tbody id="tabelaParados"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="cadastro" class="tela">
+      <div class="cabecalho-pagina">
+        <div>
+          <h1>Cadastro de Equipamento</h1>
+          <p>Cadastre ou edite os equipamentos utilizados na operação de vinhaça.</p>
+        </div>
+      </div>
+
+      <div class="formulario">
+        <input type="hidden" id="idEquipamento">
+
+        <div class="grid-form">
+          <div>
+            <label>Frota</label>
+            <input id="frota" placeholder="Ex: 6419">
+          </div>
+
+          <div>
+            <label>Tipo do equipamento</label>
+            <input id="tipo" placeholder="Ex: Caminhão vinhaça, Trator, Tanque">
+          </div>
+
+          <div>
+            <label>Categoria</label>
+            <select id="categoria" onchange="ajustarCamposFormulario()">
+              <option>Caminhão</option>
+              <option>Trator</option>
+              <option>Tanque</option>
+              <option>Apoio</option>
+            </select>
+          </div>
+
+          <div id="campoPlaca">
+            <label>Placa</label>
+            <input id="placa" placeholder="Quando houver">
+          </div>
+
+          <div>
+            <label>Status</label>
+            <select id="status" onchange="ajustarCamposFormulario()">
+              <option>Disponível</option>
+              <option>Indisponível</option>
+              <option>Tombado (Acidente)</option>
+            </select>
+          </div>
+
+          <div id="campoPrevisao">
+            <label>Previsão de liberação</label>
+            <input id="previsao" placeholder="Ex: Hoje 17:00 ou 03/06">
+          </div>
+
+          <div id="campoOS">
+            <label>Ordem de serviço</label>
+            <input id="ordemServico" placeholder="Ex: OS 1520">
+          </div>
+
+          <div>
+            <label>Responsável</label>
+            <input id="responsavel" placeholder="Nome de quem atualizou">
+          </div>
+        </div>
+
+        <div id="campoSituacao">
+          <label>Situação atual</label>
+          <input id="situacao" placeholder="Ex: liberado, oficina, aguardando peça">
+        </div>
+
+        <div id="campoProblema">
+          <label>Problema / Observação</label>
+          <textarea id="problema" placeholder="Descreva o problema ou observação"></textarea>
+        </div>
+
+        <div class="botoes">
+          <button class="btn-principal" onclick="salvarEquipamento()">💾 Salvar</button>
+          <button class="btn-secundario" onclick="limparFormulario()">🧹 Limpar</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="equipamentos" class="tela">
+      <div class="cabecalho-pagina">
+        <div>
+          <h1>Equipamentos Cadastrados</h1>
+          <p>Consulte, filtre, edite, exclua ou atualize rapidamente o status.</p>
+        </div>
+
+        <div class="acoes-topo sem-margem">
+          <button class="btn-secundario" onclick="exportarExcel()">📗 Excel</button>
+          <button class="btn-secundario" onclick="exportarPDF()">📄 PDF</button>
+        </div>
+      </div>
+
+      <div class="filtros">
+        <input id="filtroFrota" placeholder="Pesquisar frota" oninput="renderizarTabelaEquipamentos()">
+
+        <select id="filtroCategoria" onchange="renderizarTabelaEquipamentos()">
+          <option value="">Todas as categorias</option>
+          <option>Caminhão</option>
+          <option>Trator</option>
+          <option>Tanque</option>
+          <option>Apoio</option>
+        </select>
+
+        <select id="filtroStatus" onchange="renderizarTabelaEquipamentos()">
+          <option value="">Todos os status</option>
+          <option>Disponível</option>
+          <option>Indisponível</option>
+          <option>Tombado (Acidente)</option>
+        </select>
+      </div>
+
+      <div class="tabela-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Frota</th>
+              <th>Tipo</th>
+              <th>Categoria</th>
+              <th>Status atual</th>
+              <th>Problema</th>
+              <th>OS</th>
+              <th>Previsão</th>
+              <th>Atualização rápida</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="tabelaEquipamentos"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="relatorio" class="tela">
+      <div class="cabecalho-pagina">
+        <div>
+          <h1>Relatório para WhatsApp</h1>
+          <p>Texto pronto para acompanhar a disponibilidade da irrigação.</p>
+        </div>
+      </div>
+
+      <textarea id="textoRelatorio" class="relatorio" readonly></textarea>
+
+      <div class="botoes">
+        <button class="btn-principal" onclick="copiarRelatorio()">📋 Copiar relatório</button>
+        <button class="btn-secundario" onclick="baixarRelatorioTxt()">⬇️ Baixar TXT</button>
+        <button class="btn-secundario" onclick="exportarExcel()">📗 Exportar Excel</button>
+        <button class="btn-secundario" onclick="exportarPDF()">📄 Exportar PDF</button>
+      </div>
+    </section>
+
+    <section id="historico" class="tela">
+      <div class="cabecalho-pagina">
+        <div>
+          <h1>Histórico de Alterações</h1>
+          <p>Registro completo das mudanças de status, problema, OS e previsão.</p>
+        </div>
+      </div>
+
+      <div class="tabela-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Data/Hora</th>
+              <th>Frota</th>
+              <th>Status anterior</th>
+              <th>Status novo</th>
+              <th>Problema anterior</th>
+              <th>Problema novo</th>
+              <th>OS anterior</th>
+              <th>OS nova</th>
+              <th>Previsão anterior</th>
+              <th>Previsão nova</th>
+              <th>Responsável</th>
+            </tr>
+          </thead>
+          <tbody id="tabelaHistorico"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="supabase.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
