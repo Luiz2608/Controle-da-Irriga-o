@@ -27,7 +27,7 @@
     <button onclick="mostrarTela('dashboard')">📊 Dashboard</button>
     <button onclick="mostrarTela('cadastro')">➕ Cadastro</button>
     <button onclick="mostrarTela('equipamentos')">📋 Equipamentos</button>
-    <button onclick="mostrarTela('relatorio')">📲 Relatório</button>
+    <button onclick="mostrarTela('relatorio')">📲 Relatórios</button>
     <button onclick="mostrarTela('historico')">🕒 Histórico</button>
 
     <div class="tema-box">
@@ -52,74 +52,34 @@
 
       <div class="acoes-topo">
         <button class="btn-principal" onclick="carregarEquipamentos()">🔄 Atualizar dados</button>
-        <button class="btn-secundario" onclick="exportarExcel()">📗 Exportar Excel</button>
-        <button class="btn-secundario" onclick="exportarPDF()">📄 Exportar PDF</button>
       </div>
 
       <div class="cards">
-        <div class="card">
-          <span>Total Geral</span>
-          <strong id="cardTotal">0</strong>
-        </div>
-
-        <div class="card verde">
-          <span>Disponíveis</span>
-          <strong id="cardDisponiveis">0</strong>
-        </div>
-
-        <div class="card vermelho">
-          <span>Indisponíveis</span>
-          <strong id="cardIndisponiveis">0</strong>
-        </div>
-
-        <div class="card escuro">
-          <span>Tombados (Acidente)</span>
-          <strong id="cardTombados">0</strong>
-        </div>
-
-        <div class="card verde">
-          <span>Disponibilidade</span>
-          <strong id="cardPercentual">0%</strong>
-        </div>
+        <div class="card"><span>Total Geral</span><strong id="cardTotal">0</strong></div>
+        <div class="card verde"><span>Disponíveis</span><strong id="cardDisponiveis">0</strong></div>
+        <div class="card vermelho"><span>Indisponíveis</span><strong id="cardIndisponiveis">0</strong></div>
+        <div class="card escuro"><span>Tombados</span><strong id="cardTombados">0</strong></div>
+        <div class="card verde"><span>Disponibilidade</span><strong id="cardDisponibilidade">0%</strong></div>
       </div>
 
       <div class="cards categorias-cards">
-        <div class="card pequeno">
-          <span>Caminhões</span>
-          <strong id="totalCaminhoes">0</strong>
-        </div>
-
-        <div class="card pequeno">
-          <span>Tratores</span>
-          <strong id="totalTratores">0</strong>
-        </div>
-
-        <div class="card pequeno">
-          <span>Tanques</span>
-          <strong id="totalTanques">0</strong>
-        </div>
-
-        <div class="card pequeno">
-          <span>Apoio</span>
-          <strong id="totalApoio">0</strong>
-        </div>
+        <div class="card pequeno"><span>Caminhões</span><strong id="totalCaminhoes">0</strong></div>
+        <div class="card pequeno"><span>Tratores</span><strong id="totalTratores">0</strong></div>
+        <div class="card pequeno"><span>Tanques</span><strong id="totalTanques">0</strong></div>
+        <div class="card pequeno"><span>Apoio</span><strong id="totalApoio">0</strong></div>
       </div>
 
       <h2>📈 Visão Geral</h2>
 
       <div class="graficos-principais">
-        <div class="grafico-box grafico-barra">
+        <div class="grafico-box">
           <h3>Quantidade por status</h3>
-          <div class="chart-area chart-barra">
-            <canvas id="graficoBarraStatus"></canvas>
-          </div>
+          <canvas id="graficoBarraStatus"></canvas>
         </div>
 
         <div class="grafico-box">
           <h3>Distribuição geral por status</h3>
-          <div class="chart-area">
-            <canvas id="graficoPizzaGeral"></canvas>
-          </div>
+          <canvas id="graficoPizzaGeral"></canvas>
           <p id="infoPizzaGeral" class="info-grafico"></p>
         </div>
       </div>
@@ -127,47 +87,24 @@
       <h2>🥧 Disponibilidade por Categoria</h2>
 
       <div class="graficos-categorias">
-        <div class="grafico-box">
-          <h3>🚛 Caminhões</h3>
-          <div class="chart-area">
-            <canvas id="pizzaCaminhao"></canvas>
-          </div>
-          <p id="infoPizzaCaminhao" class="info-grafico"></p>
-        </div>
-
-        <div class="grafico-box">
-          <h3>🚜 Tratores</h3>
-          <div class="chart-area">
-            <canvas id="pizzaTrator"></canvas>
-          </div>
-          <p id="infoPizzaTrator" class="info-grafico"></p>
-        </div>
-
-        <div class="grafico-box">
-          <h3>🛢️ Tanques</h3>
-          <div class="chart-area">
-            <canvas id="pizzaTanque"></canvas>
-          </div>
-          <p id="infoPizzaTanque" class="info-grafico"></p>
-        </div>
-
-        <div class="grafico-box">
-          <h3>🛠️ Apoio</h3>
-          <div class="chart-area">
-            <canvas id="pizzaApoio"></canvas>
-          </div>
-          <p id="infoPizzaApoio" class="info-grafico"></p>
-        </div>
+        <div class="grafico-box"><h3>🚛 Caminhões</h3><canvas id="pizzaCaminhao"></canvas><p id="infoPizzaCaminhao" class="info-grafico"></p></div>
+        <div class="grafico-box"><h3>🚜 Tratores</h3><canvas id="pizzaTrator"></canvas><p id="infoPizzaTrator" class="info-grafico"></p></div>
+        <div class="grafico-box"><h3>🛢️ Tanques</h3><canvas id="pizzaTanque"></canvas><p id="infoPizzaTanque" class="info-grafico"></p></div>
+        <div class="grafico-box"><h3>🛠️ Apoio</h3><canvas id="pizzaApoio"></canvas><p id="infoPizzaApoio" class="info-grafico"></p></div>
       </div>
 
-      <h2>⚠️ Equipamentos Indisponíveis / Tombados</h2>
+      <h2>📂 Disponibilidade por Tipo de Equipamento</h2>
+      <p class="texto-ajuda">Clique na setinha para visualizar a disponibilidade separada pelos tipos informados no cadastro.</p>
+      <div id="accordionCategorias" class="accordion-container"></div>
 
+      <h2>⚠️ Equipamentos Indisponíveis / Tombados</h2>
       <div class="tabela-container">
         <table>
           <thead>
             <tr>
               <th>Frota</th>
               <th>Categoria</th>
+              <th>Tipo</th>
               <th>Status</th>
               <th>Problema</th>
               <th>OS</th>
@@ -199,7 +136,8 @@
 
           <div>
             <label>Tipo do equipamento</label>
-            <input id="tipo" placeholder="Ex: Caminhão vinhaça, Trator, Tanque">
+            <input id="tipo" placeholder="Ex: Caminhão vinhaça, Trator bomba, Bola D'água 30.000 L" list="listaTiposEquipamentos">
+            <datalist id="listaTiposEquipamentos"></datalist>
           </div>
 
           <div>
@@ -244,7 +182,7 @@
 
         <div id="campoSituacao">
           <label>Situação atual</label>
-          <input id="situacao" placeholder="Ex: liberado, oficina, aguardando peça">
+          <input id="situacao" placeholder="Ex: aguardando peça, em teste, liberado">
         </div>
 
         <div id="campoProblema">
@@ -265,16 +203,10 @@
           <h1>Equipamentos Cadastrados</h1>
           <p>Consulte, filtre, edite, exclua ou atualize rapidamente o status.</p>
         </div>
-
-        <div class="acoes-topo sem-margem">
-          <button class="btn-secundario" onclick="exportarExcel()">📗 Excel</button>
-          <button class="btn-secundario" onclick="exportarPDF()">📄 PDF</button>
-        </div>
       </div>
 
       <div class="filtros">
         <input id="filtroFrota" placeholder="Pesquisar frota" oninput="renderizarTabelaEquipamentos()">
-
         <select id="filtroCategoria" onchange="renderizarTabelaEquipamentos()">
           <option value="">Todas as categorias</option>
           <option>Caminhão</option>
@@ -282,7 +214,6 @@
           <option>Tanque</option>
           <option>Apoio</option>
         </select>
-
         <select id="filtroStatus" onchange="renderizarTabelaEquipamentos()">
           <option value="">Todos os status</option>
           <option>Disponível</option>
@@ -314,27 +245,118 @@
     <section id="relatorio" class="tela">
       <div class="cabecalho-pagina">
         <div>
-          <h1>Relatório para WhatsApp</h1>
-          <p>Texto pronto para acompanhar a disponibilidade da irrigação.</p>
+          <h1>Relatórios</h1>
+          <p>Relatório WhatsApp, PDF gerencial, PDF de auditoria e histórico por frota.</p>
         </div>
       </div>
 
-      <textarea id="textoRelatorio" class="relatorio" readonly></textarea>
+      <div class="relatorio-bloco">
+        <h2>📲 Relatório para WhatsApp</h2>
+        <textarea id="textoRelatorio" class="relatorio" readonly></textarea>
+        <div class="botoes">
+          <button class="btn-principal" onclick="copiarRelatorio()">📋 Copiar WhatsApp</button>
+          <button class="btn-secundario" onclick="baixarRelatorioTxt()">⬇️ Baixar TXT</button>
+        </div>
+      </div>
 
-      <div class="botoes">
-        <button class="btn-principal" onclick="copiarRelatorio()">📋 Copiar relatório</button>
-        <button class="btn-secundario" onclick="baixarRelatorioTxt()">⬇️ Baixar TXT</button>
-        <button class="btn-secundario" onclick="exportarExcel()">📗 Exportar Excel</button>
-        <button class="btn-secundario" onclick="exportarPDF()">📄 Exportar PDF</button>
+      <div class="relatorio-bloco">
+        <h2>📄 Exportações</h2>
+        <p class="texto-ajuda">Os PDFs exportados incluem indicadores, gráficos e tabelas para acompanhamento e auditoria.</p>
+        <div class="botoes">
+          <button class="btn-secundario" onclick="exportarExcel()">📗 Exportar Excel</button>
+          <button class="btn-secundario" onclick="exportarPDFGerencial()">📄 PDF Gerencial</button>
+          <button class="btn-principal" onclick="exportarPDFAuditoria()">🧾 PDF Auditoria</button>
+        </div>
+      </div>
+
+      <div class="relatorio-bloco">
+        <h2>🕒 Histórico por equipamento</h2>
+        <p class="texto-ajuda">Digite a frota e selecione o período para exportar um relatório específico do equipamento.</p>
+        <div class="filtros">
+          <input id="relFrotaHistorico" list="listaFrotasHistorico" placeholder="Digite a frota. Ex: 6419">
+          <input type="date" id="relDataInicial">
+          <input type="date" id="relDataFinal">
+        </div>
+        <div class="botoes">
+          <button class="btn-secundario" onclick="exportarPDFHistoricoFrota()">📄 PDF Histórico da Frota</button>
+          <button class="btn-secundario" onclick="exportarExcelHistoricoFrota()">📗 Excel Histórico da Frota</button>
+        </div>
       </div>
     </section>
 
     <section id="historico" class="tela">
       <div class="cabecalho-pagina">
         <div>
-          <h1>Histórico de Alterações</h1>
-          <p>Registro completo das mudanças de status, problema, OS e previsão.</p>
+          <h1>Histórico e Rastreabilidade</h1>
+          <p>Consulte o histórico geral ou analise a disponibilidade de uma frota por período.</p>
         </div>
+      </div>
+
+      <div class="relatorio-bloco">
+        <h2>🔎 Consulta por frota e período</h2>
+        <div class="filtros historico-filtros">
+          <input id="histFrota" list="listaFrotasHistorico" placeholder="Digite a frota. Ex: 6419">
+          <datalist id="listaFrotasHistorico"></datalist>
+          <input type="date" id="histDataInicial">
+          <input type="date" id="histDataFinal">
+          <button class="btn-principal" onclick="consultarHistoricoFrota()">Consultar</button>
+        </div>
+      </div>
+
+      <div id="resultadoHistoricoFrota" class="resultado-historico oculto">
+        <div class="cards historico-cards">
+          <div class="card"><span>Frota</span><strong id="histCardFrota">--</strong></div>
+          <div class="card verde"><span>Disponibilidade</span><strong id="histCardDisponibilidade">0%</strong></div>
+          <div class="card vermelho"><span>Indisponibilidade</span><strong id="histCardIndisponibilidade">0%</strong></div>
+          <div class="card escuro"><span>Alterações</span><strong id="histCardAlteracoes">0</strong></div>
+        </div>
+
+        <div class="graficos-principais historico-grafico-area">
+          <div class="grafico-box">
+            <h3>Disponibilidade no período</h3>
+            <canvas id="histPizzaPeriodo"></canvas>
+            <p id="histInfoPeriodo" class="info-grafico"></p>
+          </div>
+
+          <div class="grafico-box resumo-periodo-box">
+            <h3>Resumo do equipamento</h3>
+            <div id="histResumoEquipamento" class="resumo-equipamento"></div>
+          </div>
+        </div>
+
+
+        <h2>📋 Linha do tempo da frota</h2>
+        <div class="tabela-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Data/Hora</th>
+                <th>Status anterior</th>
+                <th>Status novo</th>
+                <th>Problema anterior</th>
+                <th>Problema novo</th>
+                <th>OS anterior</th>
+                <th>OS nova</th>
+                <th>Previsão anterior</th>
+                <th>Previsão nova</th>
+                <th>Responsável</th>
+              </tr>
+            </thead>
+            <tbody id="tabelaHistoricoFrota"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <h2>📚 Histórico Geral</h2>
+      <div class="filtros">
+        <input id="filtroHistoricoFrota" placeholder="Filtrar frota" oninput="renderizarHistoricoGeral()">
+        <select id="filtroHistoricoStatus" onchange="renderizarHistoricoGeral()">
+          <option value="">Todos os status</option>
+          <option>Disponível</option>
+          <option>Indisponível</option>
+          <option>Tombado (Acidente)</option>
+        </select>
+        <input id="filtroHistoricoResponsavel" placeholder="Filtrar responsável" oninput="renderizarHistoricoGeral()">
       </div>
 
       <div class="tabela-container">
