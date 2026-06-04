@@ -240,6 +240,102 @@
           <tbody id="tabelaEquipamentos"></tbody>
         </table>
       </div>
+
+      <div id="painelParadaEquipamento" class="relatorio-bloco campo-oculto">
+        <h2>⛔ Registrar parada do equipamento</h2>
+        <p class="texto-ajuda">Use esta área para registrar paradas atuais ou antigas. A data/hora da liberação é opcional.</p>
+
+        <input type="hidden" id="paradaEquipamentoId">
+
+        <div class="grid-form">
+          <div>
+            <label>Frota</label>
+            <input id="paradaFrota" readonly>
+          </div>
+
+          <div>
+            <label>Status da parada</label>
+            <select id="paradaStatus">
+              <option>Indisponível</option>
+              <option>Tombado (Acidente)</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Data/hora da parada</label>
+            <input type="datetime-local" id="paradaDataHora">
+          </div>
+
+          <div>
+            <label>Data/hora da liberação</label>
+            <input type="datetime-local" id="paradaDataHoraLiberacao">
+          </div>
+
+          <div>
+            <label>Ordem de serviço</label>
+            <input id="paradaOS" placeholder="Ex: 4159144">
+          </div>
+
+          <div>
+            <label>Previsão de liberação</label>
+            <input id="paradaPrevisao" placeholder="Ex: Hoje 17:00 ou Sem previsão">
+          </div>
+
+          <div>
+            <label>Responsável pela parada</label>
+            <input id="paradaResponsavel" placeholder="Nome de quem registrou">
+          </div>
+
+          <div>
+            <label>Responsável pela liberação</label>
+            <input id="paradaResponsavelLiberacao" placeholder="Preencher se já foi liberado">
+          </div>
+        </div>
+
+        <label>Problema / Observação da parada</label>
+        <textarea id="paradaProblema" placeholder="Descreva o motivo da parada"></textarea>
+
+        <label>Observação da liberação</label>
+        <textarea id="paradaObservacaoLiberacao" placeholder="Preencher se já foi liberado"></textarea>
+
+        <div class="botoes">
+          <button class="btn-principal" onclick="salvarParadaEquipamento()">💾 Salvar parada</button>
+          <button class="btn-secundario" onclick="fecharFormularioParada()">Cancelar</button>
+        </div>
+      </div>
+
+      <div id="painelLiberacaoEquipamento" class="relatorio-bloco campo-oculto">
+        <h2>✅ Liberar equipamento</h2>
+        <p class="texto-ajuda">Informe a data/hora real da liberação. Isso permite corrigir o sistema mesmo quando a atualização for feita depois.</p>
+
+        <input type="hidden" id="liberacaoEquipamentoId">
+
+        <div class="grid-form">
+          <div>
+            <label>Frota</label>
+            <input id="liberacaoFrota" readonly>
+          </div>
+
+          <div>
+            <label>Data/hora da liberação</label>
+            <input type="datetime-local" id="liberacaoDataHora">
+          </div>
+
+          <div>
+            <label>Responsável pela liberação</label>
+            <input id="liberacaoResponsavel" placeholder="Nome de quem liberou">
+          </div>
+        </div>
+
+        <label>Observação da liberação</label>
+        <textarea id="liberacaoObservacao" placeholder="Ex: equipamento liberado pela oficina"></textarea>
+
+        <div class="botoes">
+          <button class="btn-principal" onclick="salvarLiberacaoEquipamento()">✅ Confirmar liberação</button>
+          <button class="btn-secundario" onclick="fecharFormularioLiberacao()">Cancelar</button>
+        </div>
+      </div>
+
     </section>
 
     <section id="relatorio" class="tela">
