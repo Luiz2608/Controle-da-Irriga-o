@@ -2522,3 +2522,1292 @@ function normalizarTextoRelatorio(texto) {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/* ============================================================
+   CORREÇÃO FINAL: EXPORTAÇÕES POR PERÍODO
+   Regra aplicada:
+   - O relatório NÃO multiplica mais quantidade de equipamentos x dias.
+   - O tempo analisado exibido é somente a duração do período escolhido.
+   - As porcentagens usam histórico/paradas para calcular a ocorrência de indisponibilidade dentro do período selecionado.
+   - Se não houver histórico/paradas no período, o sistema não inventa indisponibilidade:
+     considera o período sem ocorrências registradas.
+============================================================ */
+
+function msParaTexto(ms) {
+  const valor = Math.max(0, Number(ms || 0));
+  const totalHoras = valor / (1000 * 60 * 60);
+  let dias = Math.floor(totalHoras / 24);
+  let horas = totalHoras - (dias * 24);
+
+  // Corrige arredondamento: 31 dias e 24.0h vira 32 dias e 0.0h
+  if (horas >= 23.95) {
+    dias += 1;
+    horas = 0;
+  }
+
+  return `${dias} dias e ${horas.toFixed(1)}h`;
+}
+
+function dataLocalInicio(dataStr) {
+  const [ano, mes, dia] = String(dataStr).split("-").map(Number);
+  return new Date(ano, mes - 1, dia, 0, 0, 0, 0);
+}
+
+function dataLocalFimExclusivo(dataStr) {
+  const [ano, mes, dia] = String(dataStr).split("-").map(Number);
+  return new Date(ano, mes - 1, dia + 1, 0, 0, 0, 0);
+}
+
+function formatarDataPeriodoBR(dataStr) {
+  if (!dataStr) return "--";
+  const [ano, mes, dia] = String(dataStr).split("-");
+  return `${dia}/${mes}/${ano}`;
+}
+
+function obterPeriodoExportacao() {
+  const hoje = new Date();
+  const inicioPadrao = new Date();
+  inicioPadrao.setDate(hoje.getDate() - 30);
+
+  const inputInicio = document.getElementById("exportDataInicial");
+  const inputFinal = document.getElementById("exportDataFinal");
+
+  if (inputInicio && !inputInicio.value) inputInicio.value = dataISOInput(inicioPadrao);
+  if (inputFinal && !inputFinal.value) inputFinal.value = dataISOInput(hoje);
+
+  const dataInicial = inputInicio?.value || dataISOInput(inicioPadrao);
+  const dataFinal = inputFinal?.value || dataISOInput(hoje);
+
+  const inicio = dataLocalInicio(dataInicial);
+  const fimExclusivo = dataLocalFimExclusivo(dataFinal);
+
+  if (fimExclusivo <= inicio) {
+    alert("A data final precisa ser igual ou posterior à data inicial.");
+    return null;
+  }
+
+  return {
+    dataInicial,
+    dataFinal,
+    inicio,
+    fimExclusivo,
+    periodoMs: fimExclusivo - inicio,
+    periodoTexto: `${formatarDataPeriodoBR(dataInicial)} a ${formatarDataPeriodoBR(dataFinal)}`
+  };
+}
+
+// Sobrescreve a função antiga apenas para também preencher as datas das exportações.
+function preencherSelectsFrota() {
+  const hoje = new Date();
+  const inicio = new Date();
+  inicio.setDate(hoje.getDate() - 30);
+
+  ["histDataInicial", "relDataInicial", "exportDataInicial"].forEach(id => {
+    const input = document.getElementById(id);
+    if (input && !input.value) input.value = dataISOInput(inicio);
+  });
+
+  ["histDataFinal", "relDataFinal", "exportDataFinal"].forEach(id => {
+    const input = document.getElementById(id);
+    if (input && !input.value) input.value = dataISOInput(hoje);
+  });
+
+  preencherDatalistTipos();
+  carregarSugestoesFrotasHistorico();
+}
+
+async function carregarDadosPeriodoExportacao(periodo) {
+  let historicos = historico || [];
+  let paradas = paradasEquipamento || [];
+
+  try {
+    const { data, error } = await supabaseClient
+      .from("historico")
+      .select("*")
+      .order("data_hora", { ascending: true });
+
+    if (!error) historicos = data || [];
+  } catch (e) {
+    console.warn("Não foi possível carregar histórico para exportação:", e);
+  }
+
+  try {
+    const { data, error } = await supabaseClient
+      .from("paradas_equipamento")
+      .select("*")
+      .order("data_hora_parada", { ascending: true });
+
+    if (!error) paradas = data || [];
+  } catch (e) {
+    console.warn("Não foi possível carregar paradas para exportação:", e);
+  }
+
+  const historicosPeriodo = historicos.filter(h => {
+    const d = new Date(h.data_hora);
+    return d >= periodo.inicio && d < periodo.fimExclusivo;
+  });
+
+  const paradasPeriodo = paradas.filter(p => {
+    if (!p.data_hora_parada) return false;
+    const inicioParada = new Date(p.data_hora_parada);
+    const fimParada = p.data_hora_liberacao ? new Date(p.data_hora_liberacao) : periodo.fimExclusivo;
+    return inicioParada < periodo.fimExclusivo && fimParada > periodo.inicio;
+  });
+
+  return { historicos, paradas, historicosPeriodo, paradasPeriodo };
+}
+
+function criarResumoVazioPeriodo(label, quantidadeEquipamentos, periodoMs) {
+  return {
+    label,
+    totalEquipamentos: quantidadeEquipamentos,
+    tempoAnalisadoMs: periodoMs,
+    disponivelMs: periodoMs,
+    indisponivelMs: 0,
+    tombadoMs: 0,
+    disponibilidade: 100,
+    indisponibilidade: 0,
+    tombadoPct: 0
+  };
+}
+
+function statusInicialAntesDoPeriodo(equipamento, historicos, periodo) {
+  const eventosAntes = historicos
+    .filter(h => {
+      const mesmaFrota = String(h.frota || "") === String(equipamento.frota || "");
+      const mesmoId = h.equipamento_id && equipamento.id && String(h.equipamento_id) === String(equipamento.id);
+      const dataEvento = new Date(h.data_hora);
+      return (mesmaFrota || mesmoId) && h.data_hora && dataEvento < periodo.inicio;
+    })
+    .sort((a, b) => new Date(b.data_hora) - new Date(a.data_hora));
+
+  if (eventosAntes.length > 0) {
+    return normalizarStatus(eventosAntes[0].status_novo);
+  }
+
+  // Sem registro anterior: não usa status atual para "viajar no tempo".
+  // A base inicial segura é Disponível até que o histórico/parada indique o contrário.
+  return "Disponível";
+}
+
+
+function montarEventosStatusEquipamentoNoPeriodo(equipamento, periodo, historicos, paradas) {
+  let statusAtual = statusInicialAntesDoPeriodo(equipamento, historicos, periodo);
+  const eventos = [];
+
+  historicos.forEach(h => {
+    const mesmaFrota = String(h.frota || "") === String(equipamento.frota || "");
+    const mesmoId = h.equipamento_id && equipamento.id && String(h.equipamento_id) === String(equipamento.id);
+    if (!(mesmaFrota || mesmoId) || !h.data_hora) return;
+
+    const dataEvento = new Date(h.data_hora);
+    if (dataEvento >= periodo.inicio && dataEvento < periodo.fimExclusivo) {
+      eventos.push({ data: dataEvento, status: normalizarStatus(h.status_novo), origem: "historico" });
+    }
+  });
+
+  paradas.forEach(p => {
+    const mesmaFrota = String(p.frota || "") === String(equipamento.frota || "");
+    const mesmoId = p.equipamento_id && equipamento.id && String(p.equipamento_id) === String(equipamento.id);
+    if (!(mesmaFrota || mesmoId) || !p.data_hora_parada) return;
+
+    const inicioParadaOriginal = new Date(p.data_hora_parada);
+    const fimParadaOriginal = p.data_hora_liberacao ? new Date(p.data_hora_liberacao) : periodo.fimExclusivo;
+
+    if (inicioParadaOriginal >= periodo.fimExclusivo || fimParadaOriginal <= periodo.inicio) return;
+
+    const inicioParada = inicioParadaOriginal < periodo.inicio ? periodo.inicio : inicioParadaOriginal;
+    const fimParada = fimParadaOriginal > periodo.fimExclusivo ? periodo.fimExclusivo : fimParadaOriginal;
+
+    eventos.push({ data: inicioParada, status: normalizarStatus(p.status_parada), origem: "parada" });
+    if (fimParada > inicioParada && p.data_hora_liberacao) {
+      eventos.push({ data: fimParada, status: "Disponível", origem: "liberacao" });
+    }
+  });
+
+  eventos.sort((a, b) => a.data - b.data);
+  return { statusInicial: statusAtual, eventos };
+}
+
+function calcularSegmentosEquipamentoNoPeriodo(equipamento, periodo, historicos, paradas) {
+  const { statusInicial, eventos } = montarEventosStatusEquipamentoNoPeriodo(equipamento, periodo, historicos, paradas);
+  const segmentos = [];
+  let statusAtual = statusSeguro(statusInicial, "Disponível");
+  let cursor = periodo.inicio;
+
+  eventos.forEach(evento => {
+    const dataEvento = evento.data < periodo.inicio ? periodo.inicio : evento.data;
+
+    if (dataEvento > cursor) {
+      segmentos.push({
+        inicio: new Date(cursor),
+        fim: new Date(dataEvento),
+        status: statusSeguro(statusAtual, "Disponível"),
+        frota: equipamento.frota,
+        categoria: equipamento.categoria_normalizada,
+        tipo: equipamento.tipo_normalizado
+      });
+    }
+
+    statusAtual = statusSeguro(evento.status, statusAtual);
+    cursor = dataEvento;
+  });
+
+  if (periodo.fimExclusivo > cursor) {
+    segmentos.push({
+      inicio: new Date(cursor),
+      fim: new Date(periodo.fimExclusivo),
+      status: statusSeguro(statusAtual, "Disponível"),
+      frota: equipamento.frota,
+      categoria: equipamento.categoria_normalizada,
+      tipo: equipamento.tipo_normalizado
+    });
+  }
+
+  return segmentos.filter(seg => seg.fim > seg.inicio);
+}
+
+function calcularTemposEquipamentoNoPeriodo(equipamento, periodo, historicos, paradas) {
+  const tempos = {
+    "Disponível": 0,
+    "Indisponível": 0,
+    "Tombado (Acidente)": 0
+  };
+
+  calcularSegmentosEquipamentoNoPeriodo(equipamento, periodo, historicos, paradas).forEach(seg => {
+    tempos[statusSeguro(seg.status, "Disponível")] += seg.fim - seg.inicio;
+  });
+
+  return tempos;
+}
+
+function calcularTemposGrupoPorSegmentos(segmentos, periodo) {
+  const tempos = {
+    "Disponível": periodo.periodoMs,
+    "Indisponível": 0,
+    "Tombado (Acidente)": 0
+  };
+
+  const intervalos = segmentos
+    .filter(seg => statusSeguro(seg.status, "Disponível") !== "Disponível")
+    .map(seg => ({
+      inicio: Math.max(new Date(seg.inicio).getTime(), periodo.inicio.getTime()),
+      fim: Math.min(new Date(seg.fim).getTime(), periodo.fimExclusivo.getTime()),
+      status: statusSeguro(seg.status, "Disponível")
+    }))
+    .filter(seg => seg.fim > seg.inicio);
+
+  if (intervalos.length === 0) return tempos;
+
+  const cortes = new Set([periodo.inicio.getTime(), periodo.fimExclusivo.getTime()]);
+  intervalos.forEach(seg => {
+    cortes.add(seg.inicio);
+    cortes.add(seg.fim);
+  });
+
+  const pontos = [...cortes].sort((a, b) => a - b);
+  let indisponivelMs = 0;
+  let tombadoMs = 0;
+
+  for (let i = 0; i < pontos.length - 1; i++) {
+    const ini = pontos[i];
+    const fim = pontos[i + 1];
+    if (fim <= ini) continue;
+
+    const ativos = intervalos.filter(seg => seg.inicio < fim && seg.fim > ini);
+    if (ativos.length === 0) continue;
+
+    const duracao = fim - ini;
+    const temTombado = ativos.some(seg => seg.status === "Tombado (Acidente)");
+
+    if (temTombado) {
+      tombadoMs += duracao;
+    } else {
+      indisponivelMs += duracao;
+    }
+  }
+
+  tempos["Tombado (Acidente)"] = Math.min(tombadoMs, periodo.periodoMs);
+  tempos["Indisponível"] = Math.min(indisponivelMs, Math.max(0, periodo.periodoMs - tempos["Tombado (Acidente)"]));
+  tempos["Disponível"] = Math.max(0, periodo.periodoMs - tempos["Indisponível"] - tempos["Tombado (Acidente)"]);
+
+  return tempos;
+}
+
+function montarResumoPeriodo(periodo, historicos, paradas) {
+  const lista = listaEquipamentosNormalizada();
+  const totalEquipamentos = lista.length;
+
+  const tipos = {};
+
+  lista.forEach(eq => {
+    const segmentosEq = calcularSegmentosEquipamentoNoPeriodo(eq, periodo, historicos, paradas);
+    const categoriaLabel = eq.categoria_normalizada === "Trator" ? "Trator Nonino" : eq.categoria_normalizada;
+    const tipoRel = tipoParaRelatorio(eq);
+    const chaveTipo = `${categoriaLabel}||${tipoRel}`;
+
+    if (!tipos[chaveTipo]) {
+      tipos[chaveTipo] = {
+        label: `${categoriaLabel} - ${tipoRel}`,
+        categoria: categoriaLabel,
+        tipo: tipoRel,
+        totalEquipamentos: 0,
+        tempoAnalisadoMs: periodo.periodoMs,
+        disponivelMs: periodo.periodoMs,
+        indisponivelMs: 0,
+        tombadoMs: 0,
+        disponibilidade: 100,
+        indisponibilidade: 0,
+        tombadoPct: 0,
+        segmentos: []
+      };
+    }
+
+    tipos[chaveTipo].totalEquipamentos += 1;
+    tipos[chaveTipo].segmentos.push(...segmentosEq);
+  });
+
+  function finalizarResumoPorOcorrencia(r) {
+    const temposGrupo = calcularTemposGrupoPorSegmentos(r.segmentos || [], periodo);
+
+    r.disponivelMs = temposGrupo["Disponível"];
+    r.indisponivelMs = temposGrupo["Indisponível"];
+    r.tombadoMs = temposGrupo["Tombado (Acidente)"];
+    r.tempoAnalisadoMs = periodo.periodoMs;
+
+    r.disponibilidade = periodo.periodoMs > 0 ? (r.disponivelMs / periodo.periodoMs) * 100 : 0;
+    r.indisponibilidade = periodo.periodoMs > 0 ? (r.indisponivelMs / periodo.periodoMs) * 100 : 0;
+    r.tombadoPct = periodo.periodoMs > 0 ? (r.tombadoMs / periodo.periodoMs) * 100 : 0;
+
+    delete r.segmentos;
+    return r;
+  }
+
+  const resumoTipos = Object.values(tipos)
+    .filter(r => r.totalEquipamentos > 0)
+    .map(finalizarResumoPorOcorrencia)
+    .sort((a, b) => String(a.label).localeCompare(String(b.label), "pt-BR"));
+
+  function combinarResumosPonderados(label, resumos, extra = {}) {
+    const pesoTotal = resumos.reduce((s, r) => s + (Number(r.totalEquipamentos) || 0), 0);
+    const divisor = pesoTotal > 0 ? pesoTotal : (resumos.length || 1);
+
+    const disponivelMs = resumos.length > 0
+      ? resumos.reduce((s, r) => s + (r.disponivelMs || 0) * ((Number(r.totalEquipamentos) || 0) || 1), 0) / divisor
+      : periodo.periodoMs;
+
+    const indisponivelMs = resumos.length > 0
+      ? resumos.reduce((s, r) => s + (r.indisponivelMs || 0) * ((Number(r.totalEquipamentos) || 0) || 1), 0) / divisor
+      : 0;
+
+    const tombadoMs = resumos.length > 0
+      ? resumos.reduce((s, r) => s + (r.tombadoMs || 0) * ((Number(r.totalEquipamentos) || 0) || 1), 0) / divisor
+      : 0;
+
+    const ajuste = periodo.periodoMs > 0 ? periodo.periodoMs / Math.max(disponivelMs + indisponivelMs + tombadoMs, 1) : 1;
+    const dispAjustado = disponivelMs * ajuste;
+    const indispAjustado = indisponivelMs * ajuste;
+    const tombAjustado = tombadoMs * ajuste;
+
+    return {
+      label,
+      ...extra,
+      totalEquipamentos: pesoTotal || resumos.reduce((s, r) => s + (Number(r.totalEquipamentos) || 0), 0),
+      tempoAnalisadoMs: periodo.periodoMs,
+      disponivelMs: dispAjustado,
+      indisponivelMs: indispAjustado,
+      tombadoMs: tombAjustado,
+      disponibilidade: periodo.periodoMs > 0 ? (dispAjustado / periodo.periodoMs) * 100 : 0,
+      indisponibilidade: periodo.periodoMs > 0 ? (indispAjustado / periodo.periodoMs) * 100 : 0,
+      tombadoPct: periodo.periodoMs > 0 ? (tombAjustado / periodo.periodoMs) * 100 : 0
+    };
+  }
+
+  const resumoCategorias = CATEGORIAS.map(cat => {
+    const categoriaLabel = cat === "Trator" ? "Trator Nonino" : cat;
+    const tiposDaCategoria = resumoTipos.filter(t => t.categoria === categoriaLabel);
+    return combinarResumosPonderados(categoriaLabel, tiposDaCategoria);
+  }).filter(r => r.totalEquipamentos > 0);
+
+  const resumoGeral = combinarResumosPonderados("Geral", resumoCategorias, { totalEquipamentos });
+  resumoGeral.totalEquipamentos = totalEquipamentos;
+
+  return { resumoGeral, resumoCategorias, resumoTipos };
+}
+
+function pctPeriodo(valorMs, periodoMs) {
+  return periodoMs > 0 ? `${((valorMs / periodoMs) * 100).toFixed(1)}%` : "0.0%";
+}
+
+function resumoParaCanvasPeriodo(resumo) {
+  return {
+    label: resumo.label,
+    disponiveis: resumo.disponivelMs,
+    indisponiveis: resumo.indisponivelMs,
+    tombados: resumo.tombadoMs
+  };
+}
+
+function criarCanvasPizzaPeriodo(resumo, titulo = "Disponibilidade do período") {
+  const canvas = document.createElement("canvas");
+  canvas.width = 900;
+  canvas.height = 520;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "#d1d5db";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(12, 12, canvas.width - 24, canvas.height - 24);
+
+  ctx.fillStyle = "#064e3b";
+  ctx.font = "bold 28px Arial";
+  quebrarTextoCanvas(ctx, titulo || "Resumo", 36, 55, 420, 32);
+
+  const dados = [
+    { status: "Disponível", valor: resumo.disponivelMs || 0 },
+    { status: "Indisponível", valor: resumo.indisponivelMs || 0 },
+    { status: "Tombado (Acidente)", valor: resumo.tombadoMs || 0 }
+  ];
+
+  const total = dados.reduce((soma, item) => soma + item.valor, 0);
+  const cx = 270;
+  const cy = 285;
+  const raio = 155;
+  let anguloInicial = -Math.PI / 2;
+
+  if (total <= 0) {
+    ctx.fillStyle = "#374151";
+    ctx.font = "22px Arial";
+    ctx.fillText("Sem dados", 210, 285);
+    return canvas;
+  }
+
+  dados.forEach(item => {
+    const angulo = (item.valor / total) * Math.PI * 2;
+    if (angulo > 0) {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, raio, anguloInicial, anguloInicial + angulo);
+      ctx.closePath();
+      ctx.fillStyle = CORES_STATUS[item.status];
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 5;
+      ctx.stroke();
+    }
+    anguloInicial += angulo;
+  });
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, 58, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.strokeStyle = "#e5e7eb";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = "#064e3b";
+  ctx.font = "bold 24px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("Período", cx, cy - 4);
+  ctx.font = "15px Arial";
+  ctx.fillStyle = "#6b7280";
+  ctx.fillText("tempo", cx, cy + 22);
+  ctx.textAlign = "left";
+
+  let y = 170;
+  ctx.font = "bold 18px Arial";
+  ctx.fillStyle = "#111827";
+  ctx.fillText("Composição por tempo", 525, y - 28);
+
+  dados.forEach(item => {
+    const percentual = total > 0 ? (item.valor / total * 100).toFixed(1) : "0.0";
+    const label = item.status === "Tombado (Acidente)" ? "Tombado" : item.status;
+
+    ctx.fillStyle = CORES_STATUS[item.status];
+    ctx.fillRect(525, y - 16, 22, 22);
+
+    ctx.fillStyle = "#111827";
+    ctx.font = "bold 18px Arial";
+    ctx.fillText(label, 560, y);
+
+    ctx.fillStyle = "#374151";
+    ctx.font = "16px Arial";
+    ctx.fillText(`${msParaTexto(item.valor)} — ${percentual}%`, 560, y + 25);
+
+    y += 74;
+  });
+
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "14px Arial";
+  ctx.fillText("Cálculo baseado no histórico e paradas do período selecionado", 525, 445);
+
+  return canvas;
+}
+
+function linhasResumoCategoriaPeriodo(resumos) {
+  return resumos.map(r => [
+    r.label,
+    r.totalEquipamentos,
+    msParaTexto(r.tempoAnalisadoMs),
+    msParaTexto(r.disponivelMs),
+    pctPeriodo(r.disponivelMs, r.tempoAnalisadoMs),
+    msParaTexto(r.indisponivelMs),
+    pctPeriodo(r.indisponivelMs, r.tempoAnalisadoMs),
+    msParaTexto(r.tombadoMs),
+    pctPeriodo(r.tombadoMs, r.tempoAnalisadoMs)
+  ]);
+}
+
+function linhasResumoTipoPeriodo(resumos) {
+  return resumos.map(r => [
+    r.categoria,
+    r.tipo,
+    r.totalEquipamentos,
+    msParaTexto(r.tempoAnalisadoMs),
+    msParaTexto(r.disponivelMs),
+    pctPeriodo(r.disponivelMs, r.tempoAnalisadoMs),
+    msParaTexto(r.indisponivelMs),
+    pctPeriodo(r.indisponivelMs, r.tempoAnalisadoMs),
+    msParaTexto(r.tombadoMs),
+    pctPeriodo(r.tombadoMs, r.tempoAnalisadoMs)
+  ]);
+}
+
+function linhasParadasPeriodo(paradasPeriodo, periodo) {
+  if (!paradasPeriodo || paradasPeriodo.length === 0) {
+    return [["-", "-", "-", "-", "-", "-", "-", "Nenhuma parada registrada no período", "-", "-"]];
+  }
+
+  return paradasPeriodo.map(p => {
+    const inicioOriginal = new Date(p.data_hora_parada);
+    const fimOriginal = p.data_hora_liberacao ? new Date(p.data_hora_liberacao) : periodo.fimExclusivo;
+    const inicio = inicioOriginal < periodo.inicio ? periodo.inicio : inicioOriginal;
+    const fim = fimOriginal > periodo.fimExclusivo ? periodo.fimExclusivo : fimOriginal;
+
+    return [
+      p.frota || "",
+      normalizarCategoria(p.categoria),
+      padronizarTipo(p.tipo),
+      normalizarStatus(p.status_parada),
+      formatarData(inicio),
+      p.data_hora_liberacao ? formatarData(fim) : "Aberta no período",
+      msParaTexto(fim - inicio),
+      p.problema || p.observacao_parada || "",
+      p.ordem_servico || "",
+      p.responsavel_parada || ""
+    ];
+  });
+}
+
+function linhasHistoricoPeriodo(historicosPeriodo) {
+  if (!historicosPeriodo || historicosPeriodo.length === 0) {
+    return [["-", "-", "-", "-", "Nenhum histórico registrado no período", "-", "-", "-"]];
+  }
+
+  return historicosPeriodo.map(h => [
+    formatarData(h.data_hora),
+    h.frota || "",
+    normalizarStatus(h.status_anterior),
+    normalizarStatus(h.status_novo),
+    h.problema_novo || "",
+    h.os_novo || "",
+    h.previsao_novo || "",
+    h.responsavel || ""
+  ]);
+}
+
+function adicionarPaginaPizzasPeriodoPDF(doc, tituloPagina, resumos, subtitulo = "") {
+  const posicoes = [
+    { x: 14, y: 42 },
+    { x: 153, y: 42 },
+    { x: 14, y: 119 },
+    { x: 153, y: 119 }
+  ];
+
+  const grupos = [];
+  for (let i = 0; i < resumos.length; i += 4) {
+    grupos.push(resumos.slice(i, i + 4));
+  }
+
+  grupos.forEach((grupo, indicePagina) => {
+    doc.addPage("landscape");
+    const titulo = grupos.length > 1 ? `${tituloPagina} (${indicePagina + 1}/${grupos.length})` : tituloPagina;
+    adicionarCabecalhoPDF(doc, "Relatório de Auditoria Operacional", titulo);
+    adicionarTituloSecaoPDF(doc, tituloPagina, 14, 34);
+
+    if (subtitulo) {
+      doc.setFontSize(8);
+      doc.setTextColor(75, 85, 99);
+      doc.text(subtitulo, 14, 40, { maxWidth: 265 });
+    }
+
+    grupo.forEach((resumo, indice) => {
+      const pos = posicoes[indice];
+      doc.setDrawColor(229, 231, 235);
+      doc.setFillColor(250, 252, 250);
+      doc.roundedRect(pos.x - 1, pos.y - 2, 132, 72, 3, 3, "FD");
+      const canvas = criarCanvasPizzaPeriodo(resumo, resumo.label || "Resumo");
+      doc.addImage(canvas.toDataURL("image/png"), "PNG", pos.x + 1, pos.y, 128, 68);
+    });
+  });
+}
+
+async function prepararDadosExportacaoPeriodo() {
+  const periodo = obterPeriodoExportacao();
+  if (!periodo) return null;
+
+  const dados = await carregarDadosPeriodoExportacao(periodo);
+  const resumos = montarResumoPeriodo(periodo, dados.historicos, dados.paradas);
+
+  return { periodo, ...dados, ...resumos };
+}
+
+async function exportarExcel() {
+  const base = await prepararDadosExportacaoPeriodo();
+  if (!base) return;
+
+  const lista = listaEquipamentosNormalizada();
+  if (lista.length === 0) return alert("Nenhum equipamento para exportar.");
+
+  const resumo = [{
+    "Período": base.periodo.periodoTexto,
+    "Dias do período": (base.periodo.periodoMs / (1000 * 60 * 60 * 24)).toFixed(0),
+    "Total de equipamentos": base.resumoGeral.totalEquipamentos,
+    "Período analisado": msParaTexto(base.resumoGeral.tempoAnalisadoMs),
+    "Tempo disponível": msParaTexto(base.resumoGeral.disponivelMs),
+    "Disponibilidade %": base.resumoGeral.disponibilidade.toFixed(1),
+    "Tempo indisponível": msParaTexto(base.resumoGeral.indisponivelMs),
+    "Indisponibilidade %": base.resumoGeral.indisponibilidade.toFixed(1),
+    "Tempo tombado/acidente": msParaTexto(base.resumoGeral.tombadoMs),
+    "Tombado %": base.resumoGeral.tombadoPct.toFixed(1),
+    "Históricos no período": base.historicosPeriodo.length,
+    "Paradas no período": base.paradasPeriodo.length
+  }];
+
+  const equipamentosPlanilha = lista.map(eq => ({
+    Frota: eq.frota || "",
+    Tipo: eq.tipo_normalizado || "",
+    Categoria: eq.categoria_normalizada || "",
+    Placa: eq.placa || "",
+    "Status atual": eq.status_normalizado || "",
+    Situação: eq.situacao || "",
+    Problema: eq.problema || "",
+    OS: eq.ordem_servico || "",
+    Previsão: eq.previsao || "",
+    Responsável: eq.responsavel || "",
+    "Última Atualização": formatarData(eq.ultima_atualizacao)
+  }));
+
+  const resumoCategoria = base.resumoCategorias.map(r => ({
+    Categoria: r.label,
+    "Qtd. equipamentos": r.totalEquipamentos,
+    "Período analisado": msParaTexto(r.tempoAnalisadoMs),
+    "Tempo disponível": msParaTexto(r.disponivelMs),
+    "% disponível": pctPeriodo(r.disponivelMs, r.tempoAnalisadoMs),
+    "Tempo indisponível": msParaTexto(r.indisponivelMs),
+    "% indisponível": pctPeriodo(r.indisponivelMs, r.tempoAnalisadoMs),
+    "Tempo tombado": msParaTexto(r.tombadoMs),
+    "% tombado": pctPeriodo(r.tombadoMs, r.tempoAnalisadoMs)
+  }));
+
+  const resumoTipo = base.resumoTipos.map(r => ({
+    Categoria: r.categoria,
+    Tipo: r.tipo,
+    "Qtd. equipamentos": r.totalEquipamentos,
+    "Período analisado": msParaTexto(r.tempoAnalisadoMs),
+    "Tempo disponível": msParaTexto(r.disponivelMs),
+    "% disponível": pctPeriodo(r.disponivelMs, r.tempoAnalisadoMs),
+    "Tempo indisponível": msParaTexto(r.indisponivelMs),
+    "% indisponível": pctPeriodo(r.indisponivelMs, r.tempoAnalisadoMs),
+    "Tempo tombado": msParaTexto(r.tombadoMs),
+    "% tombado": pctPeriodo(r.tombadoMs, r.tempoAnalisadoMs)
+  }));
+
+  const paradas = linhasParadasPeriodo(base.paradasPeriodo, base.periodo).map(l => ({
+    Frota: l[0], Categoria: l[1], Tipo: l[2], Status: l[3], Parada: l[4], Liberação: l[5], Duração: l[6], Problema: l[7], OS: l[8], Responsável: l[9]
+  }));
+
+  const historicosPlanilha = linhasHistoricoPeriodo(base.historicosPeriodo).map(l => ({
+    "Data/Hora": l[0], Frota: l[1], "Status anterior": l[2], "Status novo": l[3], Problema: l[4], OS: l[5], Previsão: l[6], Responsável: l[7]
+  }));
+
+  const arquivo = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(resumo), "Resumo do Período");
+  XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(resumoCategoria), "Resumo Categoria");
+  XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(resumoTipo), "Resumo Tipo");
+  XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(paradas), "Paradas Período");
+  XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(historicosPlanilha), "Histórico Período");
+  XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(equipamentosPlanilha), "Equipamentos Atuais");
+  XLSX.writeFile(arquivo, `controle_irrigacao_${base.periodo.dataInicial}_a_${base.periodo.dataFinal}.xlsx`);
+}
+
+async function exportarPDFGerencial() {
+  const base = await prepararDadosExportacaoPeriodo();
+  if (!base) return;
+
+  const lista = listaEquipamentosNormalizada();
+  if (lista.length === 0) return alert("Nenhum equipamento para exportar.");
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const r = base.resumoGeral;
+
+  adicionarCabecalhoPDF(doc, "Relatório Gerencial de Disponibilidade da Irrigação", `Período analisado: ${base.periodo.periodoTexto}`);
+
+  doc.setFontSize(11);
+  doc.text(`Período: ${base.periodo.periodoTexto}`, 14, 35);
+  doc.text(`Dias do período: ${(base.periodo.periodoMs / (1000 * 60 * 60 * 24)).toFixed(0)}`, 14, 42);
+  doc.text(`Total de equipamentos: ${r.totalEquipamentos}`, 14, 49);
+  doc.text(`Período analisado: ${msParaTexto(r.tempoAnalisadoMs)}`, 14, 56);
+  doc.text(`Tempo disponível: ${msParaTexto(r.disponivelMs)} (${r.disponibilidade.toFixed(1)}%)`, 14, 63);
+  doc.text(`Tempo indisponível: ${msParaTexto(r.indisponivelMs)} (${r.indisponibilidade.toFixed(1)}%)`, 14, 70);
+  doc.text(`Tempo tombado/acidente: ${msParaTexto(r.tombadoMs)} (${r.tombadoPct.toFixed(1)}%)`, 14, 77);
+
+  const pizza = criarCanvasPizzaPeriodo(r, "Disponibilidade do período");
+  doc.addImage(pizza.toDataURL("image/png"), "PNG", 124, 33, 150, 86);
+
+  doc.autoTable({
+    head: [["Categoria", "Qtd. equip.", "Período analisado", "Tempo disp.", "% Disp.", "Tempo indisp.", "% Indisp.", "Tempo tomb.", "% Tomb."]],
+    body: linhasResumoCategoriaPeriodo(base.resumoCategorias),
+    startY: 130,
+    styles: { fontSize: 7 },
+    headStyles: { fillColor: [6, 78, 59] }
+  });
+
+  doc.autoTable({
+    head: [["Frota", "Categoria", "Tipo", "Status", "Parada", "Liberação", "Duração", "Problema", "OS", "Responsável"]],
+    body: linhasParadasPeriodo(base.paradasPeriodo, base.periodo),
+    startY: doc.lastAutoTable.finalY + 10,
+    styles: { fontSize: 6 },
+    headStyles: { fillColor: [6, 78, 59] }
+  });
+
+  doc.setFontSize(8);
+  doc.text(`Históricos no período: ${base.historicosPeriodo.length} | Paradas no período: ${base.paradasPeriodo.length}`, 14, 200);
+  if (base.historicosPeriodo.length === 0 && base.paradasPeriodo.length === 0) {
+    doc.setTextColor(75, 85, 99);
+    doc.text("Sem registros de parada, tombamento ou alteração no período; disponibilidade considerada 100% por ausência de indisponibilidades registradas.", 14, 206, { maxWidth: 265 });
+  }
+
+  doc.save(`relatorio_gerencial_irrigacao_${base.periodo.dataInicial}_a_${base.periodo.dataFinal}.pdf`);
+}
+
+async function exportarPDFAuditoria() {
+  const base = await prepararDadosExportacaoPeriodo();
+  if (!base) return;
+
+  const lista = listaEquipamentosNormalizada();
+  if (lista.length === 0) return alert("Nenhum equipamento para exportar.");
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const dataEmissao = new Date().toLocaleString("pt-BR");
+  const r = base.resumoGeral;
+  const tiposCriticos = [...base.resumoTipos]
+    .filter(t => t.totalEquipamentos > 0 && (t.indisponivelMs + t.tombadoMs) > 0)
+    .sort((a, b) => a.disponibilidade - b.disponibilidade)
+    .slice(0, 8);
+
+  // Página 1
+  adicionarCabecalhoPDF(doc, "Relatório de Auditoria Operacional", `Período analisado: ${base.periodo.periodoTexto}`);
+
+  doc.setFillColor(240, 253, 244);
+  doc.roundedRect(14, 34, 269, 42, 4, 4, "F");
+  doc.setDrawColor(187, 247, 208);
+  doc.roundedRect(14, 34, 269, 42, 4, 4, "S");
+  doc.setFontSize(18);
+  doc.setTextColor(6, 78, 59);
+  doc.setFont(undefined, "bold");
+  doc.text("Relatório de Auditoria Operacional", 22, 49);
+  doc.setFont(undefined, "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(55, 65, 81);
+  doc.text("Controle automotivo dos equipamentos da irrigação, transporte e aplicação de vinhaça", 22, 58);
+  doc.text(`Período analisado: ${base.periodo.periodoTexto}`, 22, 67);
+  doc.text(`Data de emissão: ${dataEmissao}`, 190, 67);
+
+  adicionarCartaoIndicadorPDF(doc, 14, 86, "Equipamentos", r.totalEquipamentos, "cadastrados", [6, 78, 59]);
+  adicionarCartaoIndicadorPDF(doc, 80, 86, "Disponibilidade", `${r.disponibilidade.toFixed(1)}%`, msParaTexto(r.disponivelMs), [22, 163, 74]);
+  adicionarCartaoIndicadorPDF(doc, 146, 86, "Indisponibilidade", `${r.indisponibilidade.toFixed(1)}%`, msParaTexto(r.indisponivelMs), [220, 38, 38]);
+  adicionarCartaoIndicadorPDF(doc, 212, 86, "Período", msParaTexto(r.tempoAnalisadoMs), "período analisado", [55, 65, 81]);
+
+  adicionarTituloSecaoPDF(doc, "Resumo executivo", 14, 124);
+  doc.setFontSize(9);
+  doc.setTextColor(55, 65, 81);
+  doc.text(`Este relatório considera o intervalo de ${base.periodo.periodoTexto}. Os indicadores são calculados com base no histórico de alterações e nas paradas registradas, respeitando o período selecionado.`, 14, 135, { maxWidth: 128 });
+  doc.text(`Foram considerados ${r.totalEquipamentos} equipamento(s). O tempo analisado exibido corresponde ao período selecionado, sem multiplicar equipamentos x dias.`, 14, 148, { maxWidth: 128 });
+  doc.text(`A disponibilidade operacional do período foi de ${r.disponibilidade.toFixed(1)}%, com ${(r.indisponibilidade + r.tombadoPct).toFixed(1)}% de tempo fora de disponibilidade.`, 14, 161, { maxWidth: 128 });
+  if (base.historicosPeriodo.length === 0 && base.paradasPeriodo.length === 0) {
+    doc.setFontSize(8);
+    doc.setTextColor(75, 85, 99);
+    doc.text("Não houve registros de parada, tombamento ou alteração de status no período selecionado; por isso a disponibilidade foi considerada 100% pela ausência de indisponibilidades registradas.", 14, 174, { maxWidth: 128 });
+  }
+
+  const pizzaCapa = criarCanvasPizzaPeriodo(r, "Disponibilidade do período");
+  doc.addImage(pizzaCapa.toDataURL("image/png"), "PNG", 150, 120, 128, 74);
+
+  // Página 2
+  doc.addPage("landscape");
+  adicionarCabecalhoPDF(doc, "Relatório de Auditoria Operacional", "Visão geral do período");
+  adicionarTituloSecaoPDF(doc, "1. Gráfico geral de disponibilidade no período", 14, 36);
+  const pizzaGeral = criarCanvasPizzaPeriodo(r, "Distribuição por tempo");
+  doc.addImage(pizzaGeral.toDataURL("image/png"), "PNG", 14, 46, 138, 80);
+
+  doc.setFillColor(250, 252, 250);
+  doc.setDrawColor(229, 231, 235);
+  doc.roundedRect(166, 46, 116, 80, 3, 3, "FD");
+  doc.setFontSize(11);
+  doc.setTextColor(6, 78, 59);
+  doc.setFont(undefined, "bold");
+  doc.text("Leitura rápida", 174, 58);
+  doc.setFont(undefined, "normal");
+  doc.setTextColor(55, 65, 81);
+  doc.setFontSize(9);
+  doc.text(`Período: ${base.periodo.periodoTexto}`, 174, 76);
+  doc.text(`Período analisado: ${msParaTexto(r.tempoAnalisadoMs)}`, 174, 90);
+  doc.text(`Tempo disponível: ${msParaTexto(r.disponivelMs)} (${r.disponibilidade.toFixed(1)}%)`, 174, 104);
+  doc.text(`Tempo indisponível: ${msParaTexto(r.indisponivelMs)} (${r.indisponibilidade.toFixed(1)}%)`, 174, 118);
+  doc.text(`Históricos no período: ${base.historicosPeriodo.length} | Paradas: ${base.paradasPeriodo.length}`, 174, 132);
+
+  adicionarTituloSecaoPDF(doc, "2. Resumo por categoria", 14, 146);
+  doc.autoTable({
+    head: [["Categoria", "Qtd. equip.", "Período analisado", "Tempo disp.", "% Disp.", "Tempo indisp.", "% Indisp.", "Tempo tomb.", "% Tomb."]],
+    body: linhasResumoCategoriaPeriodo(base.resumoCategorias),
+    startY: 154,
+    styles: { fontSize: 7 },
+    headStyles: { fillColor: [6, 78, 59] }
+  });
+
+  adicionarPaginaPizzasPeriodoPDF(
+    doc,
+    "3. Gráficos de pizza por categoria",
+    base.resumoCategorias,
+    "Cada gráfico mostra a distribuição do período por status dentro da categoria, considerando as ocorrências registradas."
+  );
+
+  adicionarPaginaPizzasPeriodoPDF(
+    doc,
+    "4. Gráficos de pizza por tipo de equipamento",
+    base.resumoTipos,
+    "Cada gráfico mostra a distribuição do período por status dentro do tipo, considerando as ocorrências registradas."
+  );
+
+  // Página consolidação por tipo
+  doc.addPage("landscape");
+  adicionarCabecalhoPDF(doc, "Relatório de Auditoria Operacional", "Consolidação por tipo e pontos de atenção");
+  adicionarTituloSecaoPDF(doc, "5. Disponibilidade por tipo de equipamento no período", 14, 34);
+  doc.autoTable({
+    head: [["Categoria", "Tipo", "Qtd.", "Período analisado", "Tempo disp.", "% Disp.", "Tempo indisp.", "% Indisp.", "Tempo tomb.", "% Tomb."]],
+    body: linhasResumoTipoPeriodo(base.resumoTipos),
+    startY: 42,
+    styles: { fontSize: 6 },
+    headStyles: { fillColor: [6, 78, 59] }
+  });
+
+  // Mantém a seção 6 em página própria para evitar quebra de tabela com linha solta.
+  doc.addPage("landscape");
+  adicionarCabecalhoPDF(doc, "Relatório de Auditoria Operacional", "Pontos de atenção por tipo");
+  let ySecao6 = 34;
+
+  adicionarTituloSecaoPDF(doc, "6. Tipos com menor disponibilidade no período", 14, ySecao6);
+
+  if (tiposCriticos.length === 0) {
+    doc.setFontSize(9);
+    doc.setTextColor(55, 65, 81);
+    doc.text("Nenhum tipo apresentou indisponibilidade ou tombamento no período selecionado.", 14, ySecao6 + 10, { maxWidth: 260 });
+  } else {
+    doc.autoTable({
+      head: [["Categoria", "Tipo", "Qtd.", "Disponibilidade", "Tempo indisp.", "Tempo tomb."]],
+      body: tiposCriticos.map(t => [
+        t.categoria,
+        t.tipo,
+        t.totalEquipamentos,
+        `${t.disponibilidade.toFixed(1)}%`,
+        msParaTexto(t.indisponivelMs),
+        msParaTexto(t.tombadoMs)
+      ]),
+      startY: ySecao6 + 8,
+      styles: { fontSize: 7 },
+      headStyles: { fillColor: [220, 38, 38] }
+    });
+  }
+
+  // Paradas
+  doc.addPage("landscape");
+  adicionarCabecalhoPDF(doc, "Relatório de Auditoria Operacional", "Paradas registradas no período");
+  adicionarTituloSecaoPDF(doc, "7. Descrição dos Equipamentos Indisponíveis e Tombados", 14, 34);
+  doc.setFontSize(8);
+  doc.setTextColor(75, 85, 99);
+  doc.text(`Esta seção lista as paradas e tombamentos que tiveram sobreposição com o período ${base.periodo.periodoTexto}.`, 14, 43, { maxWidth: 265 });
+  doc.autoTable({
+    head: [["Frota", "Categoria", "Tipo", "Status", "Parada", "Liberação", "Duração", "Problema", "OS", "Responsável"]],
+    body: linhasParadasPeriodo(base.paradasPeriodo, base.periodo),
+    startY: 52,
+    styles: { fontSize: 6 },
+    headStyles: { fillColor: [6, 78, 59] }
+  });
+
+  // Histórico
+  doc.addPage("landscape");
+  adicionarCabecalhoPDF(doc, "Relatório de Auditoria Operacional", "Histórico de alterações no período");
+  adicionarTituloSecaoPDF(doc, "8. Histórico de alterações", 14, 34);
+  doc.autoTable({
+    head: [["Data/Hora", "Frota", "Status anterior", "Status novo", "Problema", "OS", "Previsão", "Responsável"]],
+    body: linhasHistoricoPeriodo(base.historicosPeriodo),
+    startY: 42,
+    styles: { fontSize: 6 },
+    headStyles: { fillColor: [6, 78, 59] }
+  });
+
+  // Conclusão
+  doc.addPage("landscape");
+  adicionarCabecalhoPDF(doc, "Relatório de Auditoria Operacional", "Conclusão automática");
+  adicionarTituloSecaoPDF(doc, "9. Conclusão", 14, 36);
+  doc.setFontSize(10);
+  doc.setTextColor(55, 65, 81);
+  const conclusao = [
+    `No período de ${base.periodo.periodoTexto}, foram avaliados ${r.totalEquipamentos} equipamento(s).`,
+    `O tempo analisado do relatório corresponde a ${msParaTexto(r.tempoAnalisadoMs)}, sem multiplicar quantidade de equipamentos pelo número de dias.`,
+    `A disponibilidade geral do período foi de ${r.disponibilidade.toFixed(1)}%, representando ${msParaTexto(r.disponivelMs)} em condição disponível.`,
+    `O tempo fora de disponibilidade foi de ${msParaTexto(r.indisponivelMs + r.tombadoMs)}, considerando indisponibilidades e tombamentos/acidentes registrados no histórico e nas paradas.`,
+    `Foram encontrados ${base.historicosPeriodo.length} registro(s) de histórico e ${base.paradasPeriodo.length} parada(s) com ocorrência ou sobreposição dentro do período selecionado.`,
+    ...(base.historicosPeriodo.length === 0 && base.paradasPeriodo.length === 0 ? ["Como não houve registros de parada, tombamento ou alteração no período, a disponibilidade foi considerada 100% pela ausência de indisponibilidades registradas."] : []),
+    "Este documento deve ser utilizado como apoio à rastreabilidade operacional, auditoria e acompanhamento da disponibilidade da frota da irrigação."
+  ];
+  doc.text(conclusao, 14, 50, { maxWidth: 260, lineHeightFactor: 1.6 });
+
+  adicionarRodapeAuditoriaPDF(doc, dataEmissao);
+  doc.save(`relatorio_auditoria_irrigacao_${base.periodo.dataInicial}_a_${base.periodo.dataFinal}.pdf`);
+}
+
+/* =========================================================
+   CORREÇÃO FINAL - RELATÓRIOS POR PERÍODO
+   - Cálculo por equipamento normalizado pelo período selecionado
+   - Não exibe equipamentos x dias
+   - Respeita histórico/paradas do período
+   - Adiciona quantidade de equipamentos nas legendas dos gráficos
+   ========================================================= */
+
+function calcularSegmentosEquipamentoNoPeriodo(equipamento, periodo, historicos, paradas) {
+  const inicioMs = periodo.inicio.getTime();
+  const fimMs = periodo.fimExclusivo.getTime();
+
+  const mesmoEquipamento = (registro) => {
+    const mesmaFrota = String(registro.frota || "") === String(equipamento.frota || "");
+    const mesmoId = registro.equipamento_id && equipamento.id && String(registro.equipamento_id) === String(equipamento.id);
+    return mesmaFrota || mesmoId;
+  };
+
+  const historicosEq = (historicos || [])
+    .filter(h => mesmoEquipamento(h) && h.data_hora)
+    .sort((a, b) => new Date(a.data_hora) - new Date(b.data_hora));
+
+  const ultimoAntes = historicosEq
+    .filter(h => new Date(h.data_hora).getTime() < inicioMs)
+    .sort((a, b) => new Date(b.data_hora) - new Date(a.data_hora))[0];
+
+  let statusBase = ultimoAntes ? statusSeguro(ultimoAntes.status_novo, "Disponível") : "Disponível";
+
+  const historicosPeriodo = historicosEq
+    .filter(h => {
+      const t = new Date(h.data_hora).getTime();
+      return t >= inicioMs && t < fimMs;
+    })
+    .map(h => ({
+      tempo: new Date(h.data_hora).getTime(),
+      status: statusSeguro(h.status_novo, statusBase),
+      origem: "historico"
+    }));
+
+  const paradasEq = (paradas || [])
+    .filter(p => mesmoEquipamento(p) && p.data_hora_parada)
+    .map(p => {
+      const iniOriginal = new Date(p.data_hora_parada).getTime();
+      const fimOriginal = p.data_hora_liberacao ? new Date(p.data_hora_liberacao).getTime() : fimMs;
+      const ini = Math.max(iniOriginal, inicioMs);
+      const fim = Math.min(fimOriginal, fimMs);
+      return {
+        inicio: ini,
+        fim,
+        status: statusSeguro(p.status_parada, "Indisponível"),
+        origem: "parada"
+      };
+    })
+    .filter(p => p.fim > p.inicio);
+
+  const cortes = new Set([inicioMs, fimMs]);
+  historicosPeriodo.forEach(h => cortes.add(h.tempo));
+  paradasEq.forEach(p => {
+    cortes.add(p.inicio);
+    cortes.add(p.fim);
+  });
+
+  const pontos = [...cortes].sort((a, b) => a - b);
+  const segmentos = [];
+
+  for (let i = 0; i < pontos.length - 1; i++) {
+    const ini = pontos[i];
+    const fim = pontos[i + 1];
+    if (fim <= ini) continue;
+
+    const ultimoHistoricoAteAqui = historicosPeriodo
+      .filter(h => h.tempo <= ini)
+      .sort((a, b) => b.tempo - a.tempo)[0];
+
+    let status = ultimoHistoricoAteAqui ? ultimoHistoricoAteAqui.status : statusBase;
+
+    const paradasAtivas = paradasEq.filter(p => p.inicio < fim && p.fim > ini);
+    if (paradasAtivas.length > 0) {
+      const temTombado = paradasAtivas.some(p => statusSeguro(p.status, "Indisponível") === "Tombado (Acidente)");
+      status = temTombado ? "Tombado (Acidente)" : "Indisponível";
+    }
+
+    segmentos.push({
+      inicio: new Date(ini),
+      fim: new Date(fim),
+      status: statusSeguro(status, "Disponível"),
+      frota: equipamento.frota,
+      categoria: equipamento.categoria_normalizada,
+      tipo: equipamento.tipo_normalizado
+    });
+  }
+
+  return segmentos.filter(seg => seg.fim > seg.inicio);
+}
+
+function calcularResumoNormalizadoGrupoPeriodo(label, equipamentosGrupo, periodo, historicos, paradas, extra = {}) {
+  const totalEquipamentos = equipamentosGrupo.length;
+  const bruto = {
+    "Disponível": 0,
+    "Indisponível": 0,
+    "Tombado (Acidente)": 0
+  };
+  const equipamentosPorStatus = {
+    "Disponível": new Set(),
+    "Indisponível": new Set(),
+    "Tombado (Acidente)": new Set()
+  };
+
+  equipamentosGrupo.forEach(eq => {
+    const temposEq = {
+      "Disponível": 0,
+      "Indisponível": 0,
+      "Tombado (Acidente)": 0
+    };
+
+    calcularSegmentosEquipamentoNoPeriodo(eq, periodo, historicos, paradas).forEach(seg => {
+      const status = statusSeguro(seg.status, "Disponível");
+      const duracao = Math.max(0, new Date(seg.fim).getTime() - new Date(seg.inicio).getTime());
+      bruto[status] += duracao;
+      temposEq[status] += duracao;
+    });
+
+    STATUS_LISTA.forEach(status => {
+      if ((temposEq[status] || 0) > 0) {
+        equipamentosPorStatus[status].add(String(eq.id || eq.frota || Math.random()));
+      }
+    });
+  });
+
+  const divisor = totalEquipamentos > 0 ? totalEquipamentos : 1;
+  const disponivelMs = totalEquipamentos > 0 ? bruto["Disponível"] / divisor : periodo.periodoMs;
+  const indisponivelMs = totalEquipamentos > 0 ? bruto["Indisponível"] / divisor : 0;
+  const tombadoMs = totalEquipamentos > 0 ? bruto["Tombado (Acidente)"] / divisor : 0;
+
+  const totalNormalizado = Math.max(disponivelMs + indisponivelMs + tombadoMs, 1);
+  const fator = periodo.periodoMs > 0 ? periodo.periodoMs / totalNormalizado : 1;
+
+  const dispFinal = Math.max(0, disponivelMs * fator);
+  const indispFinal = Math.max(0, indisponivelMs * fator);
+  const tombFinal = Math.max(0, tombadoMs * fator);
+
+  return {
+    label,
+    ...extra,
+    totalEquipamentos,
+    tempoAnalisadoMs: periodo.periodoMs,
+    disponivelMs: dispFinal,
+    indisponivelMs: indispFinal,
+    tombadoMs: tombFinal,
+    disponibilidade: periodo.periodoMs > 0 ? (dispFinal / periodo.periodoMs) * 100 : 0,
+    indisponibilidade: periodo.periodoMs > 0 ? (indispFinal / periodo.periodoMs) * 100 : 0,
+    tombadoPct: periodo.periodoMs > 0 ? (tombFinal / periodo.periodoMs) * 100 : 0,
+    qtdDisponivel: equipamentosPorStatus["Disponível"].size,
+    qtdIndisponivel: equipamentosPorStatus["Indisponível"].size,
+    qtdTombado: equipamentosPorStatus["Tombado (Acidente)"].size
+  };
+}
+
+function montarResumoPeriodo(periodo, historicos, paradas) {
+  const lista = listaEquipamentosNormalizada();
+  const totalEquipamentos = lista.length;
+
+  const resumoGeral = calcularResumoNormalizadoGrupoPeriodo("Geral", lista, periodo, historicos, paradas, {
+    totalEquipamentos
+  });
+  resumoGeral.totalEquipamentos = totalEquipamentos;
+
+  const resumoCategorias = CATEGORIAS.map(cat => {
+    const categoriaLabel = cat === "Trator" ? "Trator Nonino" : cat;
+    const equipamentosCategoria = lista.filter(eq => eq.categoria_normalizada === cat);
+    return calcularResumoNormalizadoGrupoPeriodo(categoriaLabel, equipamentosCategoria, periodo, historicos, paradas);
+  }).filter(r => r.totalEquipamentos > 0);
+
+  const gruposTipo = {};
+  lista.forEach(eq => {
+    const categoriaLabel = eq.categoria_normalizada === "Trator" ? "Trator Nonino" : eq.categoria_normalizada;
+    const tipoRel = tipoParaRelatorio(eq);
+    const chave = `${categoriaLabel}||${tipoRel}`;
+
+    if (!gruposTipo[chave]) {
+      gruposTipo[chave] = {
+        categoria: categoriaLabel,
+        tipo: tipoRel,
+        equipamentos: []
+      };
+    }
+
+    gruposTipo[chave].equipamentos.push(eq);
+  });
+
+  const resumoTipos = Object.values(gruposTipo)
+    .map(g => calcularResumoNormalizadoGrupoPeriodo(`${g.categoria} - ${g.tipo}`, g.equipamentos, periodo, historicos, paradas, {
+      categoria: g.categoria,
+      tipo: g.tipo
+    }))
+    .sort((a, b) => String(a.label).localeCompare(String(b.label), "pt-BR"));
+
+  return { resumoGeral, resumoCategorias, resumoTipos };
+}
+
+function textoQuantidadeEquipamentos(qtd) {
+  const n = Number(qtd) || 0;
+  return `${n} equipamento${n === 1 ? "" : "s"}`;
+}
+
+function criarCanvasPizzaPeriodo(resumo, titulo = "Disponibilidade do período") {
+  const canvas = document.createElement("canvas");
+  canvas.width = 980;
+  canvas.height = 540;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "#d1d5db";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(12, 12, canvas.width - 24, canvas.height - 24);
+
+  ctx.fillStyle = "#064e3b";
+  ctx.font = "bold 28px Arial";
+  quebrarTextoCanvas(ctx, titulo || "Resumo", 36, 55, 440, 32);
+
+  const dados = [
+    { status: "Disponível", valor: resumo.disponivelMs || 0, qtd: resumo.qtdDisponivel || 0 },
+    { status: "Indisponível", valor: resumo.indisponivelMs || 0, qtd: resumo.qtdIndisponivel || 0 },
+    { status: "Tombado (Acidente)", valor: resumo.tombadoMs || 0, qtd: resumo.qtdTombado || 0 }
+  ];
+
+  const total = dados.reduce((soma, item) => soma + item.valor, 0);
+  const cx = 280;
+  const cy = 292;
+  const raio = 155;
+  let anguloInicial = -Math.PI / 2;
+
+  if (total <= 0) {
+    ctx.fillStyle = "#374151";
+    ctx.font = "22px Arial";
+    ctx.fillText("Sem dados", 210, 285);
+    return canvas;
+  }
+
+  dados.forEach(item => {
+    const angulo = (item.valor / total) * Math.PI * 2;
+    if (angulo > 0) {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, raio, anguloInicial, anguloInicial + angulo);
+      ctx.closePath();
+      ctx.fillStyle = CORES_STATUS[item.status];
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 5;
+      ctx.stroke();
+    }
+    anguloInicial += angulo;
+  });
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, 58, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.strokeStyle = "#e5e7eb";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = "#064e3b";
+  ctx.font = "bold 24px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("Período", cx, cy - 4);
+  ctx.font = "15px Arial";
+  ctx.fillStyle = "#6b7280";
+  ctx.fillText("tempo", cx, cy + 22);
+  ctx.textAlign = "left";
+
+  let y = 165;
+  ctx.font = "bold 18px Arial";
+  ctx.fillStyle = "#111827";
+  ctx.fillText("Composição por tempo", 560, y - 28);
+
+  dados.forEach(item => {
+    const percentual = total > 0 ? (item.valor / total * 100).toFixed(1) : "0.0";
+    const label = item.status === "Tombado (Acidente)" ? "Tombado" : item.status;
+
+    ctx.fillStyle = CORES_STATUS[item.status];
+    ctx.fillRect(560, y - 16, 22, 22);
+
+    ctx.fillStyle = "#111827";
+    ctx.font = "bold 18px Arial";
+    ctx.fillText(label, 595, y);
+
+    ctx.fillStyle = "#374151";
+    ctx.font = "15px Arial";
+    ctx.fillText(`${msParaTexto(item.valor)} • ${textoQuantidadeEquipamentos(item.qtd)} — ${percentual}%`, 595, y + 25);
+
+    y += 78;
+  });
+
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "14px Arial";
+  ctx.fillText("Cálculo baseado no histórico e paradas do período selecionado", 560, 455);
+
+  return canvas;
+}
+
+function linhasResumoCategoriaPeriodo(resumos) {
+  return resumos.map(r => [
+    r.label,
+    r.totalEquipamentos,
+    msParaTexto(r.tempoAnalisadoMs),
+    `${msParaTexto(r.disponivelMs)} (${r.qtdDisponivel || 0})`,
+    pctPeriodo(r.disponivelMs, r.tempoAnalisadoMs),
+    `${msParaTexto(r.indisponivelMs)} (${r.qtdIndisponivel || 0})`,
+    pctPeriodo(r.indisponivelMs, r.tempoAnalisadoMs),
+    `${msParaTexto(r.tombadoMs)} (${r.qtdTombado || 0})`,
+    pctPeriodo(r.tombadoMs, r.tempoAnalisadoMs)
+  ]);
+}
+
+function linhasResumoTipoPeriodo(resumos) {
+  return resumos.map(r => [
+    r.categoria,
+    r.tipo,
+    r.totalEquipamentos,
+    msParaTexto(r.tempoAnalisadoMs),
+    `${msParaTexto(r.disponivelMs)} (${r.qtdDisponivel || 0})`,
+    pctPeriodo(r.disponivelMs, r.tempoAnalisadoMs),
+    `${msParaTexto(r.indisponivelMs)} (${r.qtdIndisponivel || 0})`,
+    pctPeriodo(r.indisponivelMs, r.tempoAnalisadoMs),
+    `${msParaTexto(r.tombadoMs)} (${r.qtdTombado || 0})`,
+    pctPeriodo(r.tombadoMs, r.tempoAnalisadoMs)
+  ]);
+}

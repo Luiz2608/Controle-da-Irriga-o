@@ -357,7 +357,17 @@
 
       <div class="relatorio-bloco">
         <h2>📄 Exportações</h2>
-        <p class="texto-ajuda">Os PDFs exportados incluem indicadores, gráficos e tabelas para acompanhamento e auditoria.</p>
+        <p class="texto-ajuda">Escolha o período para exportar Excel, PDF Gerencial e PDF Auditoria. O cálculo usa histórico e paradas registradas no intervalo.</p>
+        <div class="filtros">
+          <div>
+            <label>Data inicial</label>
+            <input type="date" id="exportDataInicial">
+          </div>
+          <div>
+            <label>Data final</label>
+            <input type="date" id="exportDataFinal">
+          </div>
+        </div>
         <div class="botoes">
           <button class="btn-secundario" onclick="exportarExcel()">📗 Exportar Excel</button>
           <button class="btn-secundario" onclick="exportarPDFGerencial()">📄 PDF Gerencial</button>
