@@ -357,15 +357,15 @@
 
       <div class="relatorio-bloco">
         <h2>📄 Exportações</h2>
-        <p class="texto-ajuda">Escolha o período para exportar Excel, PDF Gerencial e PDF Auditoria. O cálculo usa histórico e paradas registradas no intervalo.</p>
+        <p class="texto-ajuda">Escolha data e hora inicial/final para exportar Excel, PDF Gerencial e PDF Auditoria. O cálculo usa histórico e paradas registradas no intervalo exato.</p>
         <div class="filtros">
           <div>
-            <label>Data inicial</label>
-            <input type="date" id="exportDataInicial">
+            <label>Data/hora inicial</label>
+            <input type="datetime-local" id="exportDataInicial">
           </div>
           <div>
-            <label>Data final</label>
-            <input type="date" id="exportDataFinal">
+            <label>Data/hora final</label>
+            <input type="datetime-local" id="exportDataFinal">
           </div>
         </div>
         <div class="botoes">
@@ -380,8 +380,8 @@
         <p class="texto-ajuda">Digite a frota e selecione o período para exportar um relatório específico do equipamento.</p>
         <div class="filtros">
           <input id="relFrotaHistorico" list="listaFrotasHistorico" placeholder="Digite a frota. Ex: 6419">
-          <input type="date" id="relDataInicial">
-          <input type="date" id="relDataFinal">
+          <input type="datetime-local" id="relDataInicial">
+          <input type="datetime-local" id="relDataFinal">
         </div>
         <div class="botoes">
           <button class="btn-secundario" onclick="exportarPDFHistoricoFrota()">📄 PDF Histórico da Frota</button>
@@ -403,8 +403,8 @@
         <div class="filtros historico-filtros">
           <input id="histFrota" list="listaFrotasHistorico" placeholder="Digite a frota. Ex: 6419">
           <datalist id="listaFrotasHistorico"></datalist>
-          <input type="date" id="histDataInicial">
-          <input type="date" id="histDataFinal">
+          <input type="datetime-local" id="histDataInicial">
+          <input type="datetime-local" id="histDataFinal">
           <button class="btn-principal" onclick="consultarHistoricoFrota()">Consultar</button>
         </div>
       </div>

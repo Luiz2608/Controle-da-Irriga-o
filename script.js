@@ -183,6 +183,78 @@ function dataISOInput(date) {
   return date.toISOString().slice(0, 10);
 }
 
+function dataHoraISOInput(date = new Date()) {
+  const ajuste = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return ajuste.toISOString().slice(0, 16);
+}
+
+function dataInicioDia(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+}
+
+function dataFimDia(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 0, 0);
+}
+
+function valorTemHora(valor) {
+  return String(valor || "").includes("T");
+}
+
+function normalizarValorDataHora(valor, usarFimDoDia = false) {
+  if (!valor) return null;
+  const texto = String(valor).trim();
+
+  if (valorTemHora(texto)) {
+    return new Date(texto);
+  }
+
+  const [ano, mes, dia] = texto.split("-").map(Number);
+  if (!ano || !mes || !dia) return null;
+
+  if (usarFimDoDia) {
+    return new Date(ano, mes - 1, dia + 1, 0, 0, 0, 0);
+  }
+
+  return new Date(ano, mes - 1, dia, 0, 0, 0, 0);
+}
+
+function formatarPeriodoDataHoraBR(valor) {
+  if (!valor) return "--";
+
+  if (valorTemHora(valor)) {
+    const data = new Date(valor);
+    if (isNaN(data.getTime())) return "--";
+    return data.toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  }
+
+  const [ano, mes, dia] = String(valor).split("-");
+  return `${dia}/${mes}/${ano}`;
+}
+
+function valorPeriodoParaArquivo(valor) {
+  return String(valor || "")
+    .replace("T", "_")
+    .replace(/:/g, "-")
+    .replace(/[^0-9_\-]/g, "");
+}
+
+function preencherCampoDataHora(id, data) {
+  const input = document.getElementById(id);
+  if (!input || input.value) return;
+
+  if (input.type === "datetime-local") {
+    input.value = dataHoraISOInput(data);
+  } else {
+    input.value = dataISOInput(data);
+  }
+}
+
 function classeStatus(status) {
   const s = normalizarStatus(status);
   if (s === "Disponível") return "status-disponivel";
@@ -2233,8 +2305,8 @@ function renderizarHistoricoGeral() {
 }
 
 function obterHistoricoFiltradoPorPeriodo(frota, dataInicial, dataFinal) {
-  const inicio = new Date(`${dataInicial}T00:00:00`);
-  const fim = new Date(`${dataFinal}T23:59:59`);
+  const inicio = dataLocalInicio(dataInicial);
+  const fim = dataLocalFimExclusivo(dataFinal);
 
   const todos = historico
     .filter(h => String(h.frota) === String(frota))
@@ -2242,7 +2314,7 @@ function obterHistoricoFiltradoPorPeriodo(frota, dataInicial, dataFinal) {
 
   const dentro = todos.filter(h => {
     const d = new Date(h.data_hora);
-    return d >= inicio && d <= fim;
+    return d >= inicio && d < fim;
   });
 
   return { inicio, fim, todos, dentro };
@@ -2331,9 +2403,26 @@ function calcularDisponibilidadePeriodo(frota, dataInicial, dataFinal) {
 }
 
 function msParaTexto(ms) {
-  const horas = ms / (1000 * 60 * 60);
-  if (horas < 24) return `${horas.toFixed(1)} h`;
-  return `${(horas / 24).toFixed(1)} dias`;
+  const valor = Math.max(0, Number(ms || 0));
+  const totalMinutos = Math.round(valor / (1000 * 60));
+
+  const dias = Math.floor(totalMinutos / (24 * 60));
+  const minutosRestantes = totalMinutos % (24 * 60);
+  const horas = Math.floor(minutosRestantes / 60);
+  const minutos = minutosRestantes % 60;
+
+  const textoDias = `${dias} ${dias === 1 ? "dia" : "dias"}`;
+
+  let textoTempo;
+  if (horas > 0 && minutos > 0) {
+    textoTempo = `${horas}h${String(minutos).padStart(2, "0")}min`;
+  } else if (horas > 0) {
+    textoTempo = `${horas}h`;
+  } else {
+    textoTempo = `${minutos}min`;
+  }
+
+  return `${textoDias} e ${textoTempo}`;
 }
 
 function consultarHistoricoFrota() {
@@ -2342,7 +2431,7 @@ function consultarHistoricoFrota() {
   const dataFinal = document.getElementById("histDataFinal").value;
 
   if (!frota || !dataInicial || !dataFinal) {
-    alert("Selecione frota, data inicial e data final.");
+    alert("Informe frota, data/hora inicial e data/hora final.");
     return;
   }
 
@@ -2411,7 +2500,7 @@ function desenharPizzaHistoricoPeriodo(resultado) {
     options: opcoesPizza()
   });
 
-  document.getElementById("histInfoPeriodo").innerText = `Período: ${formatarDataCurta(resultado.inicio)} a ${formatarDataCurta(resultado.fim)} | Baseado no tempo em cada status`;
+  document.getElementById("histInfoPeriodo").innerText = `Período: ${resultado.inicio.toLocaleString("pt-BR")} a ${resultado.fim.toLocaleString("pt-BR")} | Baseado no tempo em cada status`;
 }
 
 function obterParametrosHistoricoRelatorio() {
@@ -2423,14 +2512,14 @@ function obterParametrosHistoricoRelatorio() {
 
 function exportarPDFHistoricoFrota() {
   const { frota, dataInicial, dataFinal } = obterParametrosHistoricoRelatorio();
-  if (!frota || !dataInicial || !dataFinal) return alert("Selecione frota, data inicial e data final.");
+  if (!frota || !dataInicial || !dataFinal) return alert("Informe frota, data/hora inicial e data/hora final.");
 
   const resultado = calcularDisponibilidadePeriodo(frota, dataInicial, dataFinal);
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   const eq = resultado.equipamento;
 
-  adicionarCabecalhoPDF(doc, `Histórico da Frota ${frota}`, `Período: ${dataInicial} a ${dataFinal}`);
+  adicionarCabecalhoPDF(doc, `Histórico da Frota ${frota}`, `Período: ${formatarDataPeriodoBR(dataInicial)} a ${formatarDataPeriodoBR(dataFinal)}`);
   doc.setFontSize(10);
   doc.text(`Categoria: ${eq ? eq.categoria_normalizada : "-"}`, 14, 35);
   doc.text(`Tipo: ${eq ? eq.tipo_normalizado : "-"}`, 14, 42);
@@ -2454,12 +2543,12 @@ function exportarPDFHistoricoFrota() {
     headStyles: { fillColor: [6, 78, 59] }
   });
 
-  doc.save(`historico_frota_${frota}_${dataInicial}_a_${dataFinal}.pdf`);
+  doc.save(`historico_frota_${frota}_${valorPeriodoParaArquivo(dataInicial)}_a_${valorPeriodoParaArquivo(dataFinal)}.pdf`);
 }
 
 function exportarExcelHistoricoFrota() {
   const { frota, dataInicial, dataFinal } = obterParametrosHistoricoRelatorio();
-  if (!frota || !dataInicial || !dataFinal) return alert("Selecione frota, data inicial e data final.");
+  if (!frota || !dataInicial || !dataFinal) return alert("Informe frota, data/hora inicial e data/hora final.");
 
   const resultado = calcularDisponibilidadePeriodo(frota, dataInicial, dataFinal);
   const dados = resultado.eventos.map(item => ({
@@ -2478,8 +2567,8 @@ function exportarExcelHistoricoFrota() {
 
   const resumo = [{
     Frota: frota,
-    "Data inicial": dataInicial,
-    "Data final": dataFinal,
+    "Data/hora inicial": formatarDataPeriodoBR(dataInicial),
+    "Data/hora final": formatarDataPeriodoBR(dataFinal),
     "Disponibilidade %": resultado.disponibilidade.toFixed(1),
     "Indisponibilidade %": resultado.indisponibilidade.toFixed(1),
     "Alterações": resultado.eventos.length,
@@ -2491,7 +2580,7 @@ function exportarExcelHistoricoFrota() {
   const arquivo = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(resumo), "Resumo");
   XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(dados), "Histórico");
-  XLSX.writeFile(arquivo, `historico_frota_${frota}_${dataInicial}_a_${dataFinal}.xlsx`);
+  XLSX.writeFile(arquivo, `historico_frota_${frota}_${valorPeriodoParaArquivo(dataInicial)}_a_${valorPeriodoParaArquivo(dataFinal)}.xlsx`);
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -2535,60 +2624,71 @@ function normalizarTextoRelatorio(texto) {
 
 function msParaTexto(ms) {
   const valor = Math.max(0, Number(ms || 0));
-  const totalHoras = valor / (1000 * 60 * 60);
-  let dias = Math.floor(totalHoras / 24);
-  let horas = totalHoras - (dias * 24);
+  const totalMinutos = Math.round(valor / (1000 * 60));
 
-  // Corrige arredondamento: 31 dias e 24.0h vira 32 dias e 0.0h
-  if (horas >= 23.95) {
-    dias += 1;
-    horas = 0;
+  const dias = Math.floor(totalMinutos / (24 * 60));
+  const minutosRestantes = totalMinutos % (24 * 60);
+  const horas = Math.floor(minutosRestantes / 60);
+  const minutos = minutosRestantes % 60;
+
+  const textoDias = `${dias} ${dias === 1 ? "dia" : "dias"}`;
+
+  let textoTempo;
+  if (horas > 0 && minutos > 0) {
+    textoTempo = `${horas}h${String(minutos).padStart(2, "0")}min`;
+  } else if (horas > 0) {
+    textoTempo = `${horas}h`;
+  } else {
+    textoTempo = `${minutos}min`;
   }
 
-  return `${dias} dias e ${horas.toFixed(1)}h`;
+  return `${textoDias} e ${textoTempo}`;
 }
 
 function dataLocalInicio(dataStr) {
-  const [ano, mes, dia] = String(dataStr).split("-").map(Number);
-  return new Date(ano, mes - 1, dia, 0, 0, 0, 0);
+  return normalizarValorDataHora(dataStr, false);
 }
 
 function dataLocalFimExclusivo(dataStr) {
-  const [ano, mes, dia] = String(dataStr).split("-").map(Number);
-  return new Date(ano, mes - 1, dia + 1, 0, 0, 0, 0);
+  return normalizarValorDataHora(dataStr, true);
 }
 
 function formatarDataPeriodoBR(dataStr) {
-  if (!dataStr) return "--";
-  const [ano, mes, dia] = String(dataStr).split("-");
-  return `${dia}/${mes}/${ano}`;
+  return formatarPeriodoDataHoraBR(dataStr);
 }
 
 function obterPeriodoExportacao() {
   const hoje = new Date();
-  const inicioPadrao = new Date();
-  inicioPadrao.setDate(hoje.getDate() - 30);
+  const inicioPadrao = dataInicioDia(new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 30));
+  const fimPadrao = dataFimDia(hoje);
 
   const inputInicio = document.getElementById("exportDataInicial");
   const inputFinal = document.getElementById("exportDataFinal");
 
-  if (inputInicio && !inputInicio.value) inputInicio.value = dataISOInput(inicioPadrao);
-  if (inputFinal && !inputFinal.value) inputFinal.value = dataISOInput(hoje);
+  preencherCampoDataHora("exportDataInicial", inicioPadrao);
+  preencherCampoDataHora("exportDataFinal", fimPadrao);
 
-  const dataInicial = inputInicio?.value || dataISOInput(inicioPadrao);
-  const dataFinal = inputFinal?.value || dataISOInput(hoje);
+  const dataInicial = inputInicio?.value || dataHoraISOInput(inicioPadrao);
+  const dataFinal = inputFinal?.value || dataHoraISOInput(fimPadrao);
 
   const inicio = dataLocalInicio(dataInicial);
   const fimExclusivo = dataLocalFimExclusivo(dataFinal);
 
+  if (!inicio || !fimExclusivo || isNaN(inicio.getTime()) || isNaN(fimExclusivo.getTime())) {
+    alert("Informe data/hora inicial e data/hora final válidas.");
+    return null;
+  }
+
   if (fimExclusivo <= inicio) {
-    alert("A data final precisa ser igual ou posterior à data inicial.");
+    alert("A data/hora final precisa ser posterior à data/hora inicial.");
     return null;
   }
 
   return {
     dataInicial,
     dataFinal,
+    dataInicialArquivo: valorPeriodoParaArquivo(dataInicial),
+    dataFinalArquivo: valorPeriodoParaArquivo(dataFinal),
     inicio,
     fimExclusivo,
     periodoMs: fimExclusivo - inicio,
@@ -2596,20 +2696,18 @@ function obterPeriodoExportacao() {
   };
 }
 
-// Sobrescreve a função antiga apenas para também preencher as datas das exportações.
+// Sobrescreve a função antiga para preencher data/hora das exportações e históricos.
 function preencherSelectsFrota() {
   const hoje = new Date();
-  const inicio = new Date();
-  inicio.setDate(hoje.getDate() - 30);
+  const inicio = dataInicioDia(new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 30));
+  const fim = dataFimDia(hoje);
 
   ["histDataInicial", "relDataInicial", "exportDataInicial"].forEach(id => {
-    const input = document.getElementById(id);
-    if (input && !input.value) input.value = dataISOInput(inicio);
+    preencherCampoDataHora(id, inicio);
   });
 
   ["histDataFinal", "relDataFinal", "exportDataFinal"].forEach(id => {
-    const input = document.getElementById(id);
-    if (input && !input.value) input.value = dataISOInput(hoje);
+    preencherCampoDataHora(id, fim);
   });
 
   preencherDatalistTipos();
@@ -2644,7 +2742,7 @@ async function carregarDadosPeriodoExportacao(periodo) {
 
   const historicosPeriodo = historicos.filter(h => {
     const d = new Date(h.data_hora);
-    return d >= periodo.inicio && d < periodo.fimExclusivo;
+    return d >= periodo.inicio && d <= periodo.fimExclusivo;
   });
 
   const paradasPeriodo = paradas.filter(p => {
@@ -3172,7 +3270,7 @@ async function exportarExcel() {
 
   const resumo = [{
     "Período": base.periodo.periodoTexto,
-    "Dias do período": (base.periodo.periodoMs / (1000 * 60 * 60 * 24)).toFixed(0),
+    "Duração do período": msParaTexto(base.periodo.periodoMs),
     "Total de equipamentos": base.resumoGeral.totalEquipamentos,
     "Período analisado": msParaTexto(base.resumoGeral.tempoAnalisadoMs),
     "Tempo disponível": msParaTexto(base.resumoGeral.disponivelMs),
@@ -3239,7 +3337,7 @@ async function exportarExcel() {
   XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(paradas), "Paradas Período");
   XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(historicosPlanilha), "Histórico Período");
   XLSX.utils.book_append_sheet(arquivo, XLSX.utils.json_to_sheet(equipamentosPlanilha), "Equipamentos Atuais");
-  XLSX.writeFile(arquivo, `controle_irrigacao_${base.periodo.dataInicial}_a_${base.periodo.dataFinal}.xlsx`);
+  XLSX.writeFile(arquivo, `controle_irrigacao_${base.periodo.dataInicialArquivo}_a_${base.periodo.dataFinalArquivo}.xlsx`);
 }
 
 async function exportarPDFGerencial() {
@@ -3257,7 +3355,7 @@ async function exportarPDFGerencial() {
 
   doc.setFontSize(11);
   doc.text(`Período: ${base.periodo.periodoTexto}`, 14, 35);
-  doc.text(`Dias do período: ${(base.periodo.periodoMs / (1000 * 60 * 60 * 24)).toFixed(0)}`, 14, 42);
+  doc.text(`Duração do período: ${msParaTexto(base.periodo.periodoMs)}`, 14, 42);
   doc.text(`Total de equipamentos: ${r.totalEquipamentos}`, 14, 49);
   doc.text(`Período analisado: ${msParaTexto(r.tempoAnalisadoMs)}`, 14, 56);
   doc.text(`Tempo disponível: ${msParaTexto(r.disponivelMs)} (${r.disponibilidade.toFixed(1)}%)`, 14, 63);
@@ -3290,7 +3388,7 @@ async function exportarPDFGerencial() {
     doc.text("Sem registros de parada, tombamento ou alteração no período; disponibilidade considerada 100% por ausência de indisponibilidades registradas.", 14, 206, { maxWidth: 265 });
   }
 
-  doc.save(`relatorio_gerencial_irrigacao_${base.periodo.dataInicial}_a_${base.periodo.dataFinal}.pdf`);
+  doc.save(`relatorio_gerencial_irrigacao_${base.periodo.dataInicialArquivo}_a_${base.periodo.dataFinalArquivo}.pdf`);
 }
 
 async function exportarPDFAuditoria() {
@@ -3478,7 +3576,7 @@ async function exportarPDFAuditoria() {
   doc.text(conclusao, 14, 50, { maxWidth: 260, lineHeightFactor: 1.6 });
 
   adicionarRodapeAuditoriaPDF(doc, dataEmissao);
-  doc.save(`relatorio_auditoria_irrigacao_${base.periodo.dataInicial}_a_${base.periodo.dataFinal}.pdf`);
+  doc.save(`relatorio_auditoria_irrigacao_${base.periodo.dataInicialArquivo}_a_${base.periodo.dataFinalArquivo}.pdf`);
 }
 
 /* =========================================================
@@ -3512,7 +3610,7 @@ function calcularSegmentosEquipamentoNoPeriodo(equipamento, periodo, historicos,
   const historicosPeriodo = historicosEq
     .filter(h => {
       const t = new Date(h.data_hora).getTime();
-      return t >= inicioMs && t < fimMs;
+      return t >= inicioMs && t <= fimMs;
     })
     .map(h => ({
       tempo: new Date(h.data_hora).getTime(),
