@@ -14,7 +14,7 @@ const CORES_STATUS = {
 };
 
 function normalizarStatus(status) {
-  if (!status) return "Indisponível";
+  if (status === null || status === undefined || String(status).trim() === "") return "";
   const s = String(status).trim();
   if (s === "Disponível" || s === "Operando") return "Disponível";
   if (s === "Tombado/Inativo" || s === "Tombado" || s === "Tombado (Acidente)") return "Tombado (Acidente)";
@@ -105,7 +105,7 @@ function normalizarCategoria(categoria) {
 function equipamentoNormalizado(eq) {
   return {
     ...eq,
-    status_normalizado: normalizarStatus(eq.status),
+    status_normalizado: statusSeguro(eq.status, "Disponível"),
     categoria_normalizada: normalizarCategoria(eq.categoria),
     tipo_normalizado: padronizarTipo(eq.tipo)
   };
@@ -343,6 +343,62 @@ function buscarParadaAberta(frota) {
     .sort((a, b) => new Date(b.data_hora_parada) - new Date(a.data_hora_parada))[0] || null;
 }
 
+async function buscarParadasAbertasNoBanco(frota) {
+  const { data, error } = await supabaseClient
+    .from("paradas_equipamento")
+    .select("*")
+    .eq("frota", frota)
+    .is("data_hora_liberacao", null)
+    .order("data_hora_parada", { ascending: false });
+
+  if (error) {
+    console.warn("Não foi possível consultar paradas abertas:", error.message);
+    return { paradas: [], error };
+  }
+
+  return { paradas: data || [], error: null };
+}
+
+async function fecharParadasAbertasDaFrota(equipamento, opcoes = {}) {
+  const frota = equipamento?.frota || opcoes.frota;
+  if (!frota) return [];
+
+  const { paradas, error } = await buscarParadasAbertasNoBanco(frota);
+  if (error || paradas.length === 0) return [];
+
+  const fechadas = [];
+  const responsavel = opcoes.responsavel || equipamento?.responsavel || "Não informado";
+  const observacao = opcoes.observacao || "Fechamento automático ao liberar equipamento";
+
+  for (const parada of paradas) {
+    let liberacaoISO = opcoes.liberacaoISO || new Date().toISOString();
+    const paradaMs = new Date(parada.data_hora_parada).getTime();
+    const liberacaoMs = new Date(liberacaoISO).getTime();
+
+    if (!liberacaoISO || isNaN(liberacaoMs) || (!isNaN(paradaMs) && liberacaoMs < paradaMs)) {
+      liberacaoISO = new Date().toISOString();
+    }
+
+    const { error: erroFechamento } = await supabaseClient
+      .from("paradas_equipamento")
+      .update({
+        data_hora_liberacao: liberacaoISO,
+        responsavel_liberacao: responsavel,
+        observacao_liberacao: observacao
+      })
+      .eq("id", parada.id);
+
+    if (erroFechamento) {
+      console.warn(`Não foi possível fechar a parada ${parada.id}:`, erroFechamento.message);
+      continue;
+    }
+
+    fechadas.push({ ...parada, data_hora_liberacao: liberacaoISO });
+  }
+
+  return fechadas;
+}
+
 function abrirFormularioParada(id) {
   const eq = equipamentos.find(item => item.id === id);
   if (!eq) return;
@@ -577,7 +633,15 @@ async function salvarEquipamento() {
       const mudouPrevisao = (equipamentoAntigo.previsao || "") !== dados.previsao;
 
       if (mudouStatus || mudouProblema || mudouOS || mudouPrevisao) {
-        await registrarHistoricoCompleto(equipamentoAntigo, dados, "Alteração completa do equipamento");
+        await registrarHistoricoCompleto(equipamentoAntigo, dados, "Alteração completa do equipamento", dados.ultima_atualizacao);
+      }
+
+      if (dados.status === "Disponível") {
+        await fecharParadasAbertasDaFrota(equipamentoAntigo, {
+          liberacaoISO: dados.ultima_atualizacao,
+          responsavel: dados.responsavel,
+          observacao: "Fechamento automático por edição do cadastro para Disponível"
+        });
       }
     }
 
@@ -664,6 +728,8 @@ async function atualizarStatusDireto(id, novoStatus) {
   const equipamento = equipamentos.find(eq => eq.id === id);
   if (!equipamento) return;
 
+  novoStatus = statusSeguro(novoStatus, "Disponível");
+
   if (normalizarStatus(equipamento.status) === novoStatus) {
     alert("Este equipamento já está com esse status.");
     return;
@@ -678,10 +744,11 @@ async function atualizarStatusDireto(id, novoStatus) {
   const confirmar = confirm(`Confirmar alteração da frota ${equipamento.frota} para "${novoStatus}"?`);
   if (!confirmar) return;
 
+  const dataHoraAcao = new Date().toISOString();
   const dadosAtualizados = {
     status: novoStatus,
     responsavel: responsavel.trim(),
-    ultima_atualizacao: new Date().toISOString()
+    ultima_atualizacao: dataHoraAcao
   };
 
   let dadosParaHistorico = {
@@ -713,7 +780,15 @@ async function atualizarStatusDireto(id, novoStatus) {
     return;
   }
 
-  await registrarHistoricoCompleto(equipamento, dadosParaHistorico, "Atualização rápida de status");
+  if (novoStatus === "Disponível") {
+    await fecharParadasAbertasDaFrota(equipamento, {
+      liberacaoISO: dataHoraAcao,
+      responsavel: responsavel.trim(),
+      observacao: "Fechamento automático por atualização rápida para Disponível"
+    });
+  }
+
+  await registrarHistoricoCompleto(equipamento, dadosParaHistorico, "Atualização rápida de status", dataHoraAcao);
   alert("Status atualizado com sucesso!");
   await carregarEquipamentos();
 }
@@ -854,34 +929,25 @@ async function salvarLiberacaoEquipamento() {
   const responsavel = document.getElementById("liberacaoResponsavel").value.trim();
   const observacao = document.getElementById("liberacaoObservacao").value.trim();
 
-  if (!dataHoraLiberacao || !responsavel) {
-    alert("Informe a data/hora da liberação e o responsável.");
+  if (!responsavel) {
+    alert("Informe o responsável pela liberação.");
     return;
   }
 
-  const liberacaoISO = datetimeLocalParaISO(dataHoraLiberacao);
+  // Se o usuário não informar data/hora, o sistema usa automaticamente o momento atual.
+  const liberacaoISO = dataHoraLiberacao ? datetimeLocalParaISO(dataHoraLiberacao) : new Date().toISOString();
   const paradaAberta = buscarParadaAberta(equipamento.frota);
 
-  if (paradaAberta) {
-    if (new Date(liberacaoISO) < new Date(paradaAberta.data_hora_parada)) {
-      alert("A liberação não pode ser anterior à data/hora da parada aberta.");
-      return;
-    }
-
-    const { error } = await supabaseClient
-      .from("paradas_equipamento")
-      .update({
-        data_hora_liberacao: liberacaoISO,
-        responsavel_liberacao: responsavel,
-        observacao_liberacao: observacao
-      })
-      .eq("id", paradaAberta.id);
-
-    if (error) {
-      alert("Erro ao fechar parada: " + error.message);
-      return;
-    }
+  if (paradaAberta && new Date(liberacaoISO) < new Date(paradaAberta.data_hora_parada)) {
+    alert("A liberação não pode ser anterior à data/hora da parada aberta.");
+    return;
   }
+
+  await fecharParadasAbertasDaFrota(equipamento, {
+    liberacaoISO,
+    responsavel,
+    observacao: observacao || "Liberação do equipamento"
+  });
 
   const dadosAtualizados = {
     status: "Disponível",
@@ -916,7 +982,7 @@ async function salvarLiberacaoEquipamento() {
     liberacaoISO
   );
 
-  alert("Equipamento liberado com sucesso.");
+  alert(dataHoraLiberacao ? "Equipamento liberado com sucesso." : "Equipamento liberado com sucesso. Data/hora atual preenchida automaticamente.");
   fecharFormularioLiberacao();
   await carregarEquipamentos();
   await carregarHistorico();
@@ -2348,6 +2414,7 @@ function statusAtualEquipamento(equipamento) {
 function calcularSegmentosEquipamentoNoPeriodo(equipamento, periodo, historicos = [], paradas = []) {
   const inicioMs = periodo.inicio.getTime();
   const fimMs = periodo.fimExclusivo.getTime();
+  const statusAtual = statusAtualEquipamento(equipamento);
 
   const historicosEq = (historicos || [])
     .filter(h => mesmoEquipamentoNoRegistro(h, equipamento) && h.data_hora)
@@ -2366,18 +2433,85 @@ function calcularSegmentosEquipamentoNoPeriodo(equipamento, periodo, historicos 
 
   const primeiroRegistroPeriodo = registrosPeriodo[0] || null;
 
+  const primeiraLiberacaoDepois = (inicioParadaMs) => historicosEq
+    .filter(h => {
+      const t = new Date(h.data_hora).getTime();
+      return t >= inicioParadaMs && statusSeguro(h.status_novo, "") === "Disponível";
+    })
+    .sort((a, b) => new Date(a.data_hora) - new Date(b.data_hora))[0] || null;
+
+  const calcularFimParada = (p, inicioParadaMs) => {
+    if (p.data_hora_liberacao) return new Date(p.data_hora_liberacao).getTime();
+
+    const liberacaoHistorico = primeiraLiberacaoDepois(inicioParadaMs);
+    if (liberacaoHistorico) return new Date(liberacaoHistorico.data_hora).getTime();
+
+    // Regra de proteção: parada antiga aberta não pode prender o equipamento para sempre
+    // quando o cadastro atual já está como Disponível e não existe liberação registrada.
+    if (statusAtual === "Disponível" && inicioParadaMs < inicioMs) return inicioMs;
+
+    // Se a parada começou dentro do período, mas o equipamento já está Disponível atualmente,
+    // encerra no momento atual para não deixar a parada aberta indefinidamente.
+    if (statusAtual === "Disponível") {
+      const agoraMs = Date.now();
+      return Math.min(Math.max(agoraMs, inicioParadaMs), fimMs);
+    }
+
+    return fimMs;
+  };
+
+  const paradasEq = (paradas || [])
+    .filter(p => mesmoEquipamentoNoRegistro(p, equipamento) && p.data_hora_parada)
+    .map(p => {
+      const iniOriginal = new Date(p.data_hora_parada).getTime();
+      const fimOriginal = calcularFimParada(p, iniOriginal);
+      return {
+        inicio: Math.max(iniOriginal, inicioMs),
+        fim: Math.min(fimOriginal, fimMs),
+        status: statusSeguro(p.status_parada, "Indisponível"),
+        origem: "parada",
+        abertaSemLiberacao: !p.data_hora_liberacao
+      };
+    })
+    .filter(p => p.fim > p.inicio);
+
+  // Regra de saneamento para casos como a frota 6671:
+  // se não houve alteração no período, o equipamento está disponível no cadastro atual
+  // e não existe parada fechada sobrepondo o período, o relatório não deve herdar
+  // indefinidamente um histórico/parada antiga como indisponível.
+  const temParadaFechadaNoPeriodo = (paradas || []).some(p => {
+    if (!mesmoEquipamentoNoRegistro(p, equipamento) || !p.data_hora_parada || !p.data_hora_liberacao) return false;
+    const ini = new Date(p.data_hora_parada).getTime();
+    const fim = new Date(p.data_hora_liberacao).getTime();
+    return ini < fimMs && fim > inicioMs;
+  });
+
+  if (registrosPeriodo.length === 0 && paradasEq.length === 0 && !temParadaFechadaNoPeriodo && statusAtual === "Disponível") {
+    return [{
+      inicio: new Date(inicioMs),
+      fim: new Date(fimMs),
+      status: "Disponível",
+      frota: equipamento.frota,
+      categoria: equipamento.categoria_normalizada,
+      tipo: equipamento.tipo_normalizado
+    }];
+  }
+
   // Regra corrigida:
-  // 1) se existe histórico antes do início, ele define o estado inicial;
+  // 1) se existe histórico antes do início e o cadastro atual não contradiz uma parada antiga sem liberação, ele define o estado inicial;
   // 2) se não existe histórico antes, mas existe alteração dentro do período, o status_anterior da primeira alteração define o estado inicial;
   // 3) se não existe histórico nem parada explicando o estado, usa o status atual do cadastro.
-  // Antes o código caía direto em "Disponível", e por isso tipos quebrados/tombados sem histórico apareciam com 100%.
   let statusBase = "Disponível";
   if (ultimoAntes) {
-    statusBase = statusSeguro(ultimoAntes.status_novo, "Disponível");
+    statusBase = statusSeguro(ultimoAntes.status_novo, statusAtual);
   } else if (primeiroRegistroPeriodo) {
-    statusBase = statusSeguro(primeiroRegistroPeriodo.status_anterior, statusAtualEquipamento(equipamento));
+    statusBase = statusSeguro(primeiroRegistroPeriodo.status_anterior, statusAtual);
   } else {
-    statusBase = statusAtualEquipamento(equipamento);
+    statusBase = statusAtual;
+  }
+
+  if (statusAtual === "Disponível" && registrosPeriodo.length === 0) {
+    statusBase = "Disponível";
   }
 
   const historicosPeriodo = registrosPeriodo
@@ -2386,20 +2520,6 @@ function calcularSegmentosEquipamentoNoPeriodo(equipamento, periodo, historicos 
       status: statusSeguro(h.status_novo, statusBase),
       origem: "historico"
     }));
-
-  const paradasEq = (paradas || [])
-    .filter(p => mesmoEquipamentoNoRegistro(p, equipamento) && p.data_hora_parada)
-    .map(p => {
-      const iniOriginal = new Date(p.data_hora_parada).getTime();
-      const fimOriginal = p.data_hora_liberacao ? new Date(p.data_hora_liberacao).getTime() : fimMs;
-      return {
-        inicio: Math.max(iniOriginal, inicioMs),
-        fim: Math.min(fimOriginal, fimMs),
-        status: statusSeguro(p.status_parada, "Indisponível"),
-        origem: "parada"
-      };
-    })
-    .filter(p => p.fim > p.inicio);
 
   const cortes = new Set([inicioMs, fimMs]);
   historicosPeriodo.forEach(h => cortes.add(h.inicio));

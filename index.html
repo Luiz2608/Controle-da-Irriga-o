@@ -306,7 +306,7 @@
 
       <div id="painelLiberacaoEquipamento" class="relatorio-bloco campo-oculto">
         <h2>✅ Liberar equipamento</h2>
-        <p class="texto-ajuda">Informe a data/hora real da liberação. Isso permite corrigir o sistema mesmo quando a atualização for feita depois.</p>
+        <p class="texto-ajuda">Informe a data/hora real da liberação. Se deixar em branco, o sistema preenche automaticamente com a data/hora atual para não deixar parada aberta.</p>
 
         <input type="hidden" id="liberacaoEquipamentoId">
 
@@ -319,6 +319,7 @@
           <div>
             <label>Data/hora da liberação</label>
             <input type="datetime-local" id="liberacaoDataHora">
+            <small class="texto-ajuda">Opcional: se ficar vazio, será usado o horário atual.</small>
           </div>
 
           <div>
