@@ -1307,6 +1307,13 @@ function formatarPrevisaoWhatsapp(valor) {
   return texto || "Sem previsão";
 }
 
+function obterDataHoraParadaAtual(eq) {
+  const paradaAberta = buscarParadaAberta(eq?.frota);
+  return paradaAberta?.data_hora_parada
+    ? formatarData(paradaAberta.data_hora_parada)
+    : "Não registrada";
+}
+
 function linhaRelatorioWhatsapp(eq) {
   const status = eq.status_normalizado;
   const frota = eq.frota || "Sem frota";
@@ -1314,16 +1321,17 @@ function linhaRelatorioWhatsapp(eq) {
   const problema = eq.problema || "Sem observação";
   const os = formatarOSWhatsapp(eq.ordem_servico);
   const previsao = formatarPrevisaoWhatsapp(eq.previsao);
+  const dataHoraParada = obterDataHoraParadaAtual(eq);
 
   if (status === "Disponível") {
     return `✅ Frota ${frota} – OK / Disponível – Tipo: ${tipo}`;
   }
 
   if (status === "Tombado (Acidente)") {
-    return `⚫ Frota ${frota} – Tombado (Acidente) – ${problema} – ${os} – Previsão ${previsao}`;
+    return `⚫ Frota ${frota} – Tombado (Acidente) – Parada em: ${dataHoraParada} – ${problema} – ${os} – Previsão ${previsao}`;
   }
 
-  return `❌ Frota ${frota} – Indisponível – ${problema} – ${os} – Previsão ${previsao}`;
+  return `❌ Frota ${frota} – Indisponível – Parada em: ${dataHoraParada} – ${problema} – ${os} – Previsão ${previsao}`;
 }
 
 function gerarRelatorio() {
@@ -1398,8 +1406,9 @@ function gerarRelatorio() {
 
     const os = formatarOS(eq.ordem_servico);
     const previsao = formatarPrevisao(eq.previsao);
+    const dataHoraParada = obterDataHoraParadaAtual(eq);
 
-    return `${icone} Frota ${eq.frota}${tipo} – ${status} – ${problema} – ${os} – Previsão ${previsao}`;
+    return `${icone} Frota ${eq.frota}${tipo} – ${status} – Parada em: ${dataHoraParada} – ${problema} – ${os} – Previsão ${previsao}`;
   }
 
   function gerarBlocoCategoria(categoria, titulo) {
@@ -2184,13 +2193,26 @@ function exportarPDFHistoricoFrota() {
   const pizza = criarCanvasPizzaValores(resultado.tempos, "Disponibilidade por período");
   doc.addImage(pizza.toDataURL("image/png"), "PNG", 160, 30, 95, 65);
 
-  const linhas = resultado.eventos.map(item => [
-    formatarData(item.data_hora), normalizarStatus(item.status_anterior), normalizarStatus(item.status_novo), item.problema_novo || "", item.os_novo || "", item.previsao_novo || "", item.responsavel || ""
-  ]);
+  const linhas = resultado.eventos.map(item => {
+    const statusAnterior = normalizarStatus(item.status_anterior);
+    const statusNovo = normalizarStatus(item.status_novo);
+    const iniciouParada = statusAnterior === "Disponível" && statusNovo !== "Disponível";
+
+    return [
+      formatarData(item.data_hora),
+      iniciouParada ? formatarData(item.data_hora) : "-",
+      statusAnterior,
+      statusNovo,
+      item.problema_novo || "",
+      item.os_novo || "",
+      item.previsao_novo || "",
+      item.responsavel || ""
+    ];
+  });
 
   doc.autoTable({
-    head: [["Data/Hora", "Status anterior", "Status novo", "Problema", "OS", "Previsão", "Responsável"]],
-    body: linhas.length ? linhas : [["-", "-", "-", "Nenhuma alteração no período", "-", "-", "-"]],
+    head: [["Data/Hora do registro", "Data/hora da parada", "Status anterior", "Status novo", "Problema", "OS", "Previsão", "Responsável"]],
+    body: linhas.length ? linhas : [["-", "-", "-", "-", "Nenhuma alteração no período", "-", "-", "-"]],
     startY: 102,
     styles: { fontSize: 8 },
     headStyles: { fillColor: [6, 78, 59] }
@@ -2886,7 +2908,7 @@ function linhasOcorrenciasIndisponibilidadePeriodo(periodo, historicos = [], par
         eq.categoria_normalizada || normalizarCategoria(eq.categoria),
         tipoParaRelatorio(eq),
         normalizarStatus(seg.status),
-        formatarData(inicio),
+        parada?.data_hora_parada ? formatarData(parada.data_hora_parada) : "Não registrada",
         parada && parada.data_hora_liberacao ? formatarData(fim) : (origemInferida ? "Sem liberação registrada" : "Aberta no período"),
         msParaTexto(fim - inicio),
         parada?.problema || parada?.observacao_parada || eq.problema || (origemInferida ? "Sem parada registrada; calculado pelo status atual/histórico" : ""),
@@ -3129,7 +3151,7 @@ async function exportarPDFGerencial() {
   });
 
   doc.autoTable({
-    head: [["Frota", "Categoria", "Tipo", "Status", "Parada", "Liberação", "Duração", "Problema", "OS", "Responsável"]],
+    head: [["Frota", "Categoria", "Tipo", "Status", "Data/hora da parada", "Liberação", "Duração", "Problema", "OS", "Responsável"]],
     body: linhasOcorrenciasIndisponibilidadePeriodo(base.periodo, base.historicos, base.paradas),
     startY: doc.lastAutoTable.finalY + 10,
     styles: { fontSize: 6 },
@@ -3275,7 +3297,7 @@ async function exportarPDFAuditoria() {
   doc.setTextColor(75, 85, 99);
   doc.text(`Esta seção lista equipamentos indisponíveis/tombados no período, incluindo registros formais e casos inferidos pelo status atual/histórico no período ${base.periodo.periodoTexto}.`, 14, 43, { maxWidth: 265 });
   doc.autoTable({
-    head: [["Frota", "Categoria", "Tipo", "Status", "Parada", "Liberação", "Duração", "Problema", "OS", "Responsável"]],
+    head: [["Frota", "Categoria", "Tipo", "Status", "Data/hora da parada", "Liberação", "Duração", "Problema", "OS", "Responsável"]],
     body: linhasOcorrenciasIndisponibilidadePeriodo(base.periodo, base.historicos, base.paradas),
     startY: 52,
     styles: { fontSize: 6 },
